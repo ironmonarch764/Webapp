@@ -488,7 +488,7 @@ class MainActivity : AppCompatActivity() {
         val dist = 80 * resources.displayMetrics.density
         if (show) {
             fab.visibility = View.VISIBLE
-            fab.animate().alpha(0.7f).translationY(0f).setDuration(180).start()
+            fab.animate().alpha(1f).translationY(0f).setDuration(180).start()
         } else {
             fab.animate().alpha(0f).translationY(dist).setDuration(180)
                 .withEndAction { if (!fabShown) fab.visibility = View.INVISIBLE }
