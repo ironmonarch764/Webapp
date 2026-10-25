@@ -124,7 +124,7 @@ class MainActivity : AppCompatActivity() {
                         if (line.isEmpty() || line[0] == '!' || line[0] == '[') continue
                         if (line.startsWith("@@")) continue
                         if (line.startsWith("##")) {
-                            if (cssCount < 800 && line.length < 200 && badCss.none { line.contains(it) }) {
+                            if (cssCount < 0 && line.length < 200 && badCss.none { line.contains(it) }) {
                                 css.append(line, 2, line.length).append("{display:none!important}\n")
                                 cssCount++
                             }
@@ -196,7 +196,8 @@ class MainActivity : AppCompatActivity() {
     private fun userCss(): String {
         val key = "blk:" + baseDomain(Uri.parse(webView.url ?: "").host)
         val s = prefs.getString(key, "") ?: ""
-        return s.split("\n").filter { it.isNotBlank() }.joinToString("\n") { it + "{display:none!important}" }
+        val rules = s.split("\n").filter { it.isNotBlank() }.joinToString("\n") { it + "{display:none!important}" }
+        return if (rules.isEmpty()) "" else rules + "\nhtml,body{overflow:auto!important;position:static!important}"
     }
 
     private fun injectCss(v: WebView) {
@@ -261,6 +262,11 @@ class MainActivity : AppCompatActivity() {
 
             override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
                 if (request != null && isAd(request.url.host)) {
+                    val p = request.url.path ?: ""
+                    if (p.endsWith(".js")) {
+                        val js = "window.adsbygoogle=window.adsbygoogle||[];window.adsbygoogle.loaded=true;window.adsbygoogle.push=function(){};"
+                        return WebResourceResponse("application/javascript", "utf-8", ByteArrayInputStream(js.toByteArray()))
+                    }
                     return WebResourceResponse("text/plain", "utf-8", ByteArrayInputStream(ByteArray(0)))
                 }
                 return null
