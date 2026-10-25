@@ -1,4 +1,4 @@
-package com.example.webapp // samakan dengan baris package paling atas di MainActivity.kt
+package com.myweb.app
 
 import android.webkit.CookieManager
 import android.webkit.WebView
