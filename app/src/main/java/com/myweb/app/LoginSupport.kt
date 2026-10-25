@@ -18,7 +18,6 @@ object LoginSupport {
             javaScriptEnabled = true
             domStorageEnabled = true
             databaseEnabled = true
-            userAgentString = CHROME_UA
         }
     }
 
