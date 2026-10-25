@@ -1,5 +1,6 @@
 package com.myweb.app
 
+import android.webkit.WebSettings
 import android.annotation.SuppressLint
 import android.content.Intent
 import android.graphics.Color
@@ -243,7 +244,9 @@ class MainActivity : AppCompatActivity() {
             displayZoomControls = false
             setSupportMultipleWindows(true)
             javaScriptCanOpenWindowsAutomatically = false
+            cacheMode = WebSettings.LOAD_DEFAULTsetoffscreenPreRaster(true)
         }
+        webView.setLayerType(View.LAYER_TYPE_HARDWARE, null)
         CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true)
         webView.addJavascriptInterface(Bridge(), "Android")
 
