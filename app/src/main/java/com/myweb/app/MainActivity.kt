@@ -206,6 +206,11 @@ class MainActivity : AppCompatActivity() {
             JSONObject.quote(css) + ";(document.head||document.documentElement).appendChild(s);})();"
         v.evaluateJavascript(js, null)
     }
+    
+    override fun onPause() {
+    super.onPause()
+    LoginSupport.save()
+    }
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -218,11 +223,6 @@ class MainActivity : AppCompatActivity() {
             val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
             v.setPadding(0, 0, 0, ime.bottom)
             insets
-        }
-        
-        override fun onPause() {
-             super.onPause()
-             LoginSupport.save()
         }
 
         webView = findViewById(R.id.webView)
