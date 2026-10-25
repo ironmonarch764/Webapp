@@ -40,7 +40,7 @@ class MainActivity : AppCompatActivity() {
 
     private var currentUrl: String
         get() = prefs.getString("url", "") ?: ""
-        set(v) = prefs.edit().putString("url", v).apply()
+        set(v) { prefs.edit().putString("url", v).apply(); addSiteIfNew(v) }
 
     private var blockCross: Boolean
         get() = prefs.getBoolean("blockCross", true)
@@ -535,6 +535,7 @@ class MainActivity : AppCompatActivity() {
             ),
             listOf(
                 MenuAction("🌐", "Ganti alamat web") { askUrl(cancelable = true) },
+                MenuAction("🔖", "Situs tersimpan") { showSites() },
                 MenuAction("🧹", "Hapus blokir elemen situs ini") {
                     val key = "blk:" + baseDomain(Uri.parse(webView.url ?: "").host)
                     prefs.edit().remove(key).apply()
@@ -552,7 +553,50 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, if (on) "Pindah domain diblokir" else "Pindah domain diizinkan", Toast.LENGTH_SHORT).show()
         }
     }
+    private fun loadSites(): MutableList<Pair<String, String>> {
+        val out = mutableListOf<Pair<String, String>>()
+        try {
+            val arr = org.json.JSONArray(prefs.getString("sites", "[]"))
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                out.add(o.getString("n") to o.getString("u"))
+            }
+        } catch (e: Exception) { }
+        return out
+    }
 
+    private fun storeSites(list: List<Pair<String, String>>) {
+        val arr = org.json.JSONArray()
+        list.forEach { arr.put(org.json.JSONObject().put("n", it.first).put("u", it.second)) }
+        prefs.edit().putString("sites", arr.toString()).apply()
+    }
+
+    private fun addSiteIfNew(url: String) {
+        if (url.isBlank()) return
+        val list = loadSites()
+        if (list.any { it.second == url }) return
+        val host = Uri.parse(url).host?.removePrefix("www.") ?: url
+        list.add(host to url)
+        storeSites(list)
+    }
+
+    private fun openSite(url: String) {
+        currentUrl = url
+        webView.clearHistory()
+        load()
+    }
+
+    private fun showSites() {
+        addSiteIfNew(currentUrl)
+        showSitesSheet(
+            this,
+            loadSites(),
+            currentUrl,
+            { url -> openSite(url) },
+            { url -> storeSites(loadSites().filter { it.second != url }) },
+            { askUrl(cancelable = true) }
+        )
+    }
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         webView.saveState(outState)
