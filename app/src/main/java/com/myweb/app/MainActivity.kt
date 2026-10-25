@@ -219,8 +219,14 @@ class MainActivity : AppCompatActivity() {
             v.setPadding(0, 0, 0, ime.bottom)
             insets
         }
+        
+        override fun onPause() {
+             super.onPause()
+             LoginSupport.save()
+        }
 
         webView = findViewById(R.id.webView)
+        LoginSupport.setup(webView)
         webView.setBackgroundColor(Color.BLACK)
         progress = findViewById(R.id.progress)
         findViewById<ImageButton>(R.id.menuBtn).setOnClickListener { showMenu() }
@@ -442,6 +448,7 @@ class MainActivity : AppCompatActivity() {
     private fun oldMenu() {
         val items = arrayOf(
             "Ganti alamat web",
+            "Situs tersimpan",
             "Muat ulang",
             "Ke halaman awal",
             "Blok elemen (ketuk iklan)",
