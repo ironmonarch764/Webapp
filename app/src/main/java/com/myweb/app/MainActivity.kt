@@ -245,7 +245,7 @@ class MainActivity : AppCompatActivity() {
             setSupportMultipleWindows(true)
             javaScriptCanOpenWindowsAutomatically = false
             cacheMode = WebSettings.LOAD_DEFAULT
-            setOffscreenPreRaster(true)
+        
         }
         webView.setLayerType(View.LAYER_TYPE_HARDWARE, null)
         CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true)
