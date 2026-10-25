@@ -224,6 +224,7 @@ class MainActivity : AppCompatActivity() {
         webView.setBackgroundColor(Color.BLACK)
         progress = findViewById(R.id.progress)
         findViewById<ImageButton>(R.id.menuBtn).setOnClickListener { showMenu() }
+        setupFabAutoHide()
 
         webView.settings.apply {
             javaScriptEnabled = true
@@ -438,7 +439,7 @@ class MainActivity : AppCompatActivity() {
         dlg.show()
     }
 
-    private fun showMenu() {
+    private fun oldMenu() {
         val items = arrayOf(
             "Ganti alamat web",
             "Muat ulang",
@@ -476,6 +477,80 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
             }.show()
+    }
+    
+    private var fabShown = true
+
+    private fun setFab(show: Boolean) {
+        if (show == fabShown) return
+        fabShown = show
+        val fab = findViewById<ImageButton>(R.id.menuBtn)
+        val dist = 80 * resources.displayMetrics.density
+        if (show) {
+            fab.visibility = View.VISIBLE
+            fab.animate().alpha(0.7f).translationY(0f).setDuration(180).start()
+        } else {
+            fab.animate().alpha(0f).translationY(dist).setDuration(180)
+                .withEndAction { if (!fabShown) fab.visibility = View.INVISIBLE }
+                .start()
+        }
+    }
+
+    @SuppressLint("ClickableViewAccessibility")
+    private fun setupFabAutoHide() {
+        val slop = android.view.ViewConfiguration.get(this).scaledTouchSlop
+        var downX = 0f
+        var downY = 0f
+        webView.setOnScrollChangeListener { _, _, scrollY, _, oldY ->
+            val dy = scrollY - oldY
+            if (scrollY < 10 || dy < -12) {
+                setFab(true)
+            } else if (dy > 12) {
+                setFab(false)
+            }
+        }
+        webView.setOnTouchListener { _, e ->
+            if (e.action == android.view.MotionEvent.ACTION_DOWN) {
+                downX = e.x
+                downY = e.y
+            } else if (e.action == android.view.MotionEvent.ACTION_UP) {
+                if (Math.abs(e.x - downX) < slop && Math.abs(e.y - downY) < slop) setFab(true)
+            }
+            false
+        }
+    }
+
+    private fun showMenu() {
+        showMenuSheet(
+            this,
+            listOf(
+                MenuAction("🔄", "Muat ulang") { webView.reload() },
+                MenuAction("🏠", "Awal") { load() },
+                MenuAction("🎯", "Blok elemen") {
+                    if (!onErrorPage()) {
+                        pickerActive = true
+                        webView.evaluateJavascript(PICKER_JS, null)
+                    }
+                }
+            ),
+            listOf(
+                MenuAction("🌐", "Ganti alamat web") { askUrl(cancelable = true) },
+                MenuAction("🧹", "Hapus blokir elemen situs ini") {
+                    val key = "blk:" + baseDomain(Uri.parse(webView.url ?: "").host)
+                    prefs.edit().remove(key).apply()
+                    webView.reload()
+                    Toast.makeText(this, "Blokir elemen situs ini dihapus", Toast.LENGTH_SHORT).show()
+                },
+                MenuAction("⬇️", "Perbarui daftar iklan") {
+                    Toast.makeText(this, "Mengunduh daftar iklan...", Toast.LENGTH_SHORT).show()
+                    refreshLists(true)
+                }
+            ),
+            blockCross
+        ) { on ->
+            blockCross = on
+            Toast.makeText(this, if (on) "Pindah domain diblokir" else "Pindah domain diizinkan", Toast.LENGTH_SHORT).show()
+        }
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
