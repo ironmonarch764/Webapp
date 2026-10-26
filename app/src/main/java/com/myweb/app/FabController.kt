@@ -26,7 +26,7 @@ class FabController(
     private val COOLDOWN_MS = 700L      // jeda tombol menu, milidetik
     private val SIDE_ZONE = 0.18f       // lebar area ketuk kiri & kanan (18% lebar layar). 0f = matikan
     private val RIGHT_DIR = 1           // ketuk tepi kanan: 1 = turun, -1 = naik
-    private val LEFT_DIR = -1           // ketuk tepi kiri: -1 = naik, 1 = turun (isi 1 agar dua sisi turun)
+    private val LEFT_DIR = 1           // ketuk tepi kiri: -1 = naik, 1 = turun (isi 1 agar dua sisi turun)
     private val BOTTOM_ZONE = 0f        // area ketuk bawah (turun). Contoh 0.25f untuk menyalakan
     private val TOP_ZONE = 0f           // area ketuk atas (naik). Contoh 0.12f untuk menyalakan
     private val PAGE_FRACTION = 0.9f    // satu ketukan = 90% tinggi layar (sisakan 10% agar nyambung)
@@ -133,7 +133,7 @@ class FabController(
                             scrollPage(1)
                             consumed = true
                         } else if (edge && TOP_ZONE > 0f && e.y < h * TOP_ZONE) {
-                            scrollPage(1)
+                            scrollPage(-1)
                             consumed = true
                         } else {
                             setShown(!shown)
