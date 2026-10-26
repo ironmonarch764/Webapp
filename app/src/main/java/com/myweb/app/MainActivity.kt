@@ -372,14 +372,7 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
     resultMsg.sendToTarget()
     return true
 }
-        }
-                }
-                val transport = resultMsg.obj as WebView.WebViewTransport
-                transport.webView = temp
-                resultMsg.sendToTarget()
-                return true
-            }
-
+        
             override fun onJsAlert(view: WebView?, url: String?, message: String?, result: JsResult?): Boolean {
                 result?.cancel()
                 return true
