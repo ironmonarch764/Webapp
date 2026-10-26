@@ -21,10 +21,16 @@ android {
         }
     }
     buildTypes {
-        getByName("debug") {
-            signingConfig = signingConfigs.getByName("shared")
-        }
+    getByName("debug") {
+        signingConfig = signingConfigs.getByName("shared")
     }
+    getByName("release") {
+        isMinifyEnabled = true
+        isShrinkResources = true
+        proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+        signingConfig = signingConfigs.getByName("shared")
+    }
+}
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
