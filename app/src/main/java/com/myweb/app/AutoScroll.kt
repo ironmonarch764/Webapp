@@ -1,20 +1,17 @@
 package com.myweb.app
 
 import android.app.Activity
-import android.app.Dialog
 import android.content.SharedPreferences
 import android.graphics.Color
-import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
 import android.view.Choreographer
 import android.view.Gravity
+import android.view.View
 import android.view.ViewGroup
-import android.view.Window
 import android.webkit.WebView
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.SeekBar
-import android.widget.Switch
 import android.widget.TextView
 import kotlin.math.pow
 
@@ -24,6 +21,9 @@ class AutoScroller(private val webView: WebView, prefs: SharedPreferences) {
 
     var running = false
         private set
+
+    // Dipanggil setiap kali auto-scroll mulai (true) atau berhenti (false)
+    var onStateChange: ((Boolean) -> Unit)? = null
 
     private var speedDp = 28f
     private var lastNanos = 0L
@@ -74,136 +74,128 @@ class AutoScroller(private val webView: WebView, prefs: SharedPreferences) {
         remainder = 0f
         stuckSince = 0L
         Choreographer.getInstance().postFrameCallback(callback)
+        onStateChange?.invoke(true)
     }
 
     fun stop() {
         if (!running) return
         running = false
         Choreographer.getInstance().removeFrameCallback(callback)
+        onStateChange?.invoke(false)
     }
 }
 
-fun showScrollSheet(a: Activity, scroller: AutoScroller, prefs: SharedPreferences) {
-    val match = ViewGroup.LayoutParams.MATCH_PARENT
-    val wrap = ViewGroup.LayoutParams.WRAP_CONTENT
+// Panel kecil melayang untuk auto-scroll.
+//  - Menu "Auto-scroll: ON" memunculkan panel (mode siap).
+//  - Tekan ▶ : auto-scroll jalan, panel menghilang.
+//  - Sentuh layar / sampai dasar halaman : auto-scroll berhenti, panel muncul lagi.
+//  - Tekan ✕ (atau menu "Auto-scroll: OFF") : keluar dari mode, panel hilang.
+class AutoScrollPanel(
+    private val a: Activity,
+    private val scroller: AutoScroller,
+    private val prefs: SharedPreferences
+) {
+    var modeOn = false
+        private set
 
-    val d = Dialog(a)
-    d.requestWindowFeature(Window.FEATURE_NO_TITLE)
-    d.setCancelable(true)
-    d.setCanceledOnTouchOutside(true)
-    val dp = a.resources.displayMetrics.density
-    fun px(v: Int) = (v * dp).toInt()
+    private var box: LinearLayout? = null
 
-    val sheetBg = GradientDrawable().apply {
-        setColor(Color.parseColor("#F01F2024"))
-        val r = px(26).toFloat()
-        cornerRadii = floatArrayOf(r, r, r, r, 0f, 0f, 0f, 0f)
-    }
-    val root = LinearLayout(a).apply {
-        orientation = LinearLayout.VERTICAL
-        background = sheetBg
-        setPadding(px(20), px(16), px(20), px(24))
-        isClickable = true
+    init {
+        scroller.onStateChange = { refresh() }
     }
 
-    root.addView(TextView(a).apply {
-        text = "⏬ Scroll"
-        textSize = 18f
-        setTextColor(Color.WHITE)
-    }, LinearLayout.LayoutParams(match, wrap))
-
-    // --- Ketuk tepi (bisa dimatikan) ---
-    val swRow = LinearLayout(a).apply {
-        orientation = LinearLayout.HORIZONTAL
-        gravity = Gravity.CENTER_VERTICAL
-        setPadding(0, px(12), 0, px(2))
+    fun toggle() {
+        if (modeOn) exit() else enter()
     }
-    swRow.addView(TextView(a).apply {
-        text = "Ketuk tepi = geser 1 layar"
-        textSize = 16f
-        setTextColor(Color.WHITE)
-    }, LinearLayout.LayoutParams(0, wrap, 1f))
-    swRow.addView(Switch(a).apply {
-        isChecked = prefs.getBoolean("edge_on", true)
-        setOnCheckedChangeListener { _, c -> prefs.edit().putBoolean("edge_on", c).apply() }
-    })
-    root.addView(swRow)
-    root.addView(TextView(a).apply {
-        text = "Tepi bawah = turun, tepi atas = naik, tengah = tombol menu"
-        textSize = 12f
-        setTextColor(Color.parseColor("#8A8E99"))
-    }, LinearLayout.LayoutParams(match, wrap))
 
-    // --- Auto-scroll ---
-    root.addView(TextView(a).apply {
-        text = "Auto-scroll"
-        textSize = 16f
-        setTextColor(Color.WHITE)
-    }, LinearLayout.LayoutParams(match, wrap).apply { topMargin = px(18) })
-
-    val speedTv = TextView(a).apply {
-        text = "Kecepatan:  " + prefs.getInt("as_speed", 30)
-        textSize = 14f
-        setTextColor(Color.parseColor("#D0D3DC"))
+    private fun enter() {
+        modeOn = true
+        refresh()
     }
-    root.addView(speedTv, LinearLayout.LayoutParams(match, wrap).apply { topMargin = px(8) })
 
-    val bar = SeekBar(a).apply {
-        max = 100
-        progress = prefs.getInt("as_speed", 30)
-        setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(s: SeekBar?, p: Int, fromUser: Boolean) {
-                speedTv.text = "Kecepatan:  " + p
-                if (!fromUser) return
-                prefs.edit().putInt("as_speed", p).apply()
-                scroller.setSpeedFromProgress(p)
-            }
-            override fun onStartTrackingTouch(s: SeekBar?) {}
-            override fun onStopTrackingTouch(s: SeekBar?) {}
-        })
+    private fun exit() {
+        modeOn = false
+        scroller.stop()
+        refresh()
     }
-    root.addView(bar, LinearLayout.LayoutParams(match, wrap))
 
-    root.addView(TextView(a).apply {
-        text = "0 = pelan sekali, 100 = cepat. Sentuh layar untuk berhenti."
-        textSize = 12f
-        setTextColor(Color.parseColor("#8A8E99"))
-    }, LinearLayout.LayoutParams(match, wrap))
-
-    val btnBg = GradientDrawable().apply {
-        setColor(Color.parseColor("#2A2C33"))
-        cornerRadius = px(18).toFloat()
-    }
-    val btn = TextView(a)
-    btn.text = if (scroller.running) "⏸ Berhenti" else "▶ Mulai"
-    btn.textSize = 16f
-    btn.setTextColor(Color.WHITE)
-    btn.gravity = Gravity.CENTER
-    btn.background = btnBg
-    btn.setPadding(0, px(12), 0, px(12))
-    btn.isClickable = true
-    btn.setOnClickListener {
-        if (scroller.running) {
-            scroller.stop()
-            btn.text = "▶ Mulai"
-        } else {
-            scroller.start()
-            d.dismiss()
+    private fun refresh() {
+        if (!modeOn) {
+            box?.visibility = View.GONE
+            return
         }
+        val b = box ?: build()
+        b.visibility = if (scroller.running) View.GONE else View.VISIBLE
     }
-    root.addView(btn, LinearLayout.LayoutParams(match, wrap).apply { topMargin = px(16) })
 
-    // Seluruh layar jadi area ketuk: ketuk di luar panel = tutup (tanpa redup)
-    val overlay = FrameLayout(a)
-    overlay.setOnClickListener { d.dismiss() }
-    overlay.addView(root, FrameLayout.LayoutParams(match, wrap, Gravity.BOTTOM))
+    private fun build(): LinearLayout {
+        val dp = a.resources.displayMetrics.density
+        fun px(v: Int) = (v * dp).toInt()
+        val wrap = ViewGroup.LayoutParams.WRAP_CONTENT
 
-    d.setContentView(overlay)
-    d.window?.apply {
-        setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
-        setLayout(match, match)
-        setDimAmount(0f)
-        attributes = attributes.apply { windowAnimations = android.R.style.Animation_InputMethod }
+        val bg = GradientDrawable().apply {
+            setColor(Color.parseColor("#EE1F2024"))
+            cornerRadius = px(28).toFloat()
+        }
+        val b = LinearLayout(a).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = bg
+            setPadding(px(6), px(4), px(6), px(4))
+            isClickable = true
+        }
+
+        b.addView(TextView(a).apply {
+            text = "▶"
+            textSize = 20f
+            setTextColor(Color.WHITE)
+            gravity = Gravity.CENTER
+            setPadding(px(14), px(8), px(14), px(8))
+            isClickable = true
+            setOnClickListener { scroller.start() }
+        })
+
+        val valueTv = TextView(a).apply {
+            text = prefs.getInt("as_speed", 30).toString()
+            textSize = 13f
+            setTextColor(Color.parseColor("#D0D3DC"))
+            gravity = Gravity.CENTER
+            minWidth = px(30)
+        }
+        val bar = SeekBar(a).apply {
+            max = 100
+            progress = prefs.getInt("as_speed", 30)
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(s: SeekBar?, p: Int, fromUser: Boolean) {
+                    valueTv.text = p.toString()
+                    if (!fromUser) return
+                    prefs.edit().putInt("as_speed", p).apply()
+                    scroller.setSpeedFromProgress(p)
+                }
+                override fun onStartTrackingTouch(s: SeekBar?) {}
+                override fun onStopTrackingTouch(s: SeekBar?) {}
+            })
+        }
+        b.addView(bar, LinearLayout.LayoutParams(px(140), wrap))
+        b.addView(valueTv)
+
+        b.addView(TextView(a).apply {
+            text = "✕"
+            textSize = 18f
+            setTextColor(Color.parseColor("#D0D3DC"))
+            gravity = Gravity.CENTER
+            setPadding(px(12), px(8), px(12), px(8))
+            isClickable = true
+            setOnClickListener { exit() }
+        })
+
+        a.findViewById<ViewGroup>(android.R.id.content).addView(
+            b,
+            FrameLayout.LayoutParams(wrap, wrap, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply {
+                bottomMargin = px(28)
+            }
+        )
+        box = b
+        return b
     }
-    d.show()
 }
