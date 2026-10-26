@@ -82,6 +82,16 @@ class MainActivity : AppCompatActivity() {
         @JavascriptInterface
         fun pickerDone() { runOnUiThread { pickerActive = false } }
     }
+    
+   private var popupView: WebView? = null
+
+private fun closePopup() {
+    val p = popupView ?: return
+    popupView = null
+    (p.parent as? android.view.ViewGroup)?.removeView(p)
+    p.stopLoading()
+    p.destroy()
+}
 
     private fun onErrorPage(): Boolean = webView.url?.startsWith("file:") == true
 
@@ -317,21 +327,51 @@ class MainActivity : AppCompatActivity() {
                 return try { chooser.launch(p.createIntent()); true } catch (e: Exception) { fileCallback = null; false }
             }
 
-            override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Boolean, resultMsg: Message?): Boolean {
-                if (!isUserGesture || resultMsg == null) return false
-                val temp = WebView(this@MainActivity)
-                temp.webViewClient = object : WebViewClient() {
-                    override fun shouldOverrideUrlLoading(v: WebView, req: WebResourceRequest): Boolean {
-                        val u = req.url
-                        if ((baseDomain(u.host) == siteBase || !blockCross) && !isAd(u.host)) {
-                            webView.loadUrl(u.toString())
-                        } else {
-                            Toast.makeText(this@MainActivity, "Popup diblokir", Toast.LENGTH_SHORT).show()
-                        }
-                        v.stopLoading()
-                        v.post { v.destroy() }
-                        return true
-                    }
+override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Boolean, resultMsg: Message?): Boolean {
+    if (!isUserGesture || resultMsg == null) return false
+    val transport = resultMsg.obj as WebView.WebViewTransport
+    if (blockCross) {
+        val temp = WebView(this@MainActivity)
+        temp.webViewClient = object : WebViewClient() {
+            override fun shouldOverrideUrlLoading(v: WebView, req: WebResourceRequest): Boolean {
+                val u = req.url
+                if (baseDomain(u.host) == siteBase && !isAd(u.host)) {
+                    webView.loadUrl(u.toString())
+                } else {
+                    Toast.makeText(this@MainActivity, "Popup diblokir", Toast.LENGTH_SHORT).show()
+                }
+                v.stopLoading()
+                v.post { v.destroy() }
+                return true
+            }
+        }
+        transport.webView = temp
+        resultMsg.sendToTarget()
+        return true
+    }
+    closePopup()
+    val popup = WebView(this@MainActivity)
+    popup.settings.javaScriptEnabled = true
+    popup.settings.domStorageEnabled = true
+    CookieManager.getInstance().setAcceptThirdPartyCookies(popup, true)
+    popup.webViewClient = object : WebViewClient() {
+        override fun shouldOverrideUrlLoading(v: WebView, req: WebResourceRequest): Boolean = isAd(req.url.host)
+    }
+    popup.webChromeClient = object : WebChromeClient() {
+        override fun onCloseWindow(window: WebView?) { closePopup() }
+    }
+    findViewById<android.view.ViewGroup>(android.R.id.content).addView(
+        popup,
+        FrameLayout.LayoutParams(
+            android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+            android.view.ViewGroup.LayoutParams.MATCH_PARENT
+        )
+    )
+    popupView = popup
+    transport.webView = popup
+    resultMsg.sendToTarget()
+    return true
+}
                 }
                 val transport = resultMsg.obj as WebView.WebViewTransport
                 transport.webView = temp
@@ -361,7 +401,8 @@ class MainActivity : AppCompatActivity() {
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
-                if (webView.canGoBack()) webView.goBack() else finish()
+                if (popupView != null) closePopup()
+                else if (webView.canGoBack()) webView.goBack() else finish()
             }
         })
 
