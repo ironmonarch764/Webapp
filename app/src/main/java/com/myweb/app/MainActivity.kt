@@ -41,7 +41,10 @@ class MainActivity : AppCompatActivity() {
 
     private var currentUrl: String
         get() = prefs.getString("url", "") ?: ""
-        set(v) { prefs.edit().putString("url", v).apply(); addSiteIfNew(v) }
+        set(v) {
+            prefs.edit().putString("url", v).remove("last_page").remove("last_scroll").apply()
+            addSiteIfNew(v)
+        }
 
     private fun crossKey() = "blockCross:" + baseDomain(Uri.parse(currentUrl).host)
     private var blockCross: Boolean
@@ -53,6 +56,7 @@ class MainActivity : AppCompatActivity() {
     private var siteBase: String = ""
     private var firstLoad = false
     private var pickerActive = false
+    private var restoreY = 0
 
     private val chooser = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
         fileCallback?.onReceiveValue(WebChromeClient.FileChooserParams.parseResult(r.resultCode, r.data))
@@ -226,6 +230,42 @@ class MainActivity : AppCompatActivity() {
     super.onPause()
     LoginSupport.save()
     autoScroller.stop()
+    saveReadingPosition()
+    }
+
+    // Simpan halaman + posisi scroll terakhir supaya aplikasi dibuka lagi di tempat yang sama
+    private fun saveReadingPosition() {
+        val u = webView.url ?: return
+        if (!u.startsWith("http://") && !u.startsWith("https://")) return
+        val e = prefs.edit()
+        if (prefs.getString("last_page", null) != u) e.putInt("last_scroll", 0)
+        e.putString("last_page", u).apply()
+        webView.evaluateJavascript(
+            "(function(){return Math.round(window.scrollY||document.documentElement.scrollTop||0);})()"
+        ) { r ->
+            val y = r?.trim('"')?.toIntOrNull() ?: return@evaluateJavascript
+            prefs.edit().putInt("last_scroll", y).apply()
+        }
+    }
+
+    // Buka halaman terakhir (kalau masih satu situs dengan alamat web yang dipilih), kalau tidak ke halaman awal
+    private fun resumeOrLoad() {
+        val last = prefs.getString("last_page", null)
+        if (!last.isNullOrBlank() &&
+            baseDomain(Uri.parse(last).host) == baseDomain(Uri.parse(currentUrl).host)) {
+            restoreY = prefs.getInt("last_scroll", 0)
+            firstLoad = true
+            webView.loadUrl(last)
+        } else load()
+    }
+
+    private fun restoreScroll(v: WebView, y: Int) {
+        // gambar komik sering dimuat belakangan, jadi coba beberapa kali sampai halaman cukup panjang
+        for (d in longArrayOf(150, 700, 1500, 2800)) {
+            v.postDelayed({
+                v.evaluateJavascript("(function(){if(window.scrollY<$y-5)window.scrollTo(0,$y);})()", null)
+            }, d)
+        }
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -313,6 +353,11 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
                 injectCss(v)
+                if (restoreY > 0) {
+                    val y = restoreY
+                    restoreY = 0
+                    restoreScroll(v, y)
+                }
             }
 
             override fun onReceivedError(v: WebView, req: WebResourceRequest, err: WebResourceError) {
@@ -408,7 +453,7 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
         refreshLists(false)
 
         if (savedInstanceState != null) webView.restoreState(savedInstanceState)
-        else if (currentUrl.isBlank()) askUrl(cancelable = false) else load()
+        else if (currentUrl.isBlank()) askUrl(cancelable = false) else resumeOrLoad()
     }
 
     @Suppress("DEPRECATION")

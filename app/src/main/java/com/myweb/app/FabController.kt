@@ -28,7 +28,7 @@ class FabController(
 ) {
     // ---- Pengaturan (ubah angkanya sesuai selera) ----
     private val COOLDOWN_MS = 700L      // jeda tombol menu, milidetik
-    private val SIDE_ZONE = 0.18f       // lebar area ketuk kiri & kanan (18% lebar layar). 0f = matikan
+    private val SIDE_ZONE = 0.09f       // lebar area ketuk kiri & kanan (9% lebar layar). 0f = matikan
     private val SIDE_TOP = 0.15f        // area samping mulai dari 15% tinggi layar (sisakan bar atas situs)
     private val SIDE_BOTTOM = 0.15f     // area samping berakhir 15% sebelum dasar (sisakan bar bawah situs)
     private val RIGHT_DIR = 1           // ketuk tepi kanan: 1 = turun, -1 = naik
