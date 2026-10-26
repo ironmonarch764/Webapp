@@ -9,6 +9,7 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.view.Window
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.Switch
 import android.widget.TextView
@@ -27,6 +28,8 @@ fun showMenuSheet(
 ) {
     val d = Dialog(a)
     d.requestWindowFeature(Window.FEATURE_NO_TITLE)
+    d.setCancelable(true)
+    d.setCanceledOnTouchOutside(true)
     val dp = a.resources.displayMetrics.density
     fun px(v: Int) = (v * dp).toInt()
 
@@ -39,6 +42,7 @@ fun showMenuSheet(
         orientation = LinearLayout.VERTICAL
         background = rounded(Color.parseColor("#1F2024"), px(26).toFloat(), true)
         setPadding(px(18), px(10), px(18), px(24))
+        isClickable = true
     }
 
     val handle = View(a).apply { background = rounded(0x44FFFFFF, px(3).toFloat()) }
@@ -103,11 +107,15 @@ fun showMenuSheet(
     })
     root.addView(swRow)
 
-    d.setContentView(root)
+    // Seluruh layar jadi area ketuk: ketuk di luar menu = tutup
+    val overlay = FrameLayout(a)
+    overlay.setOnClickListener { d.dismiss() }
+    overlay.addView(root, FrameLayout.LayoutParams(MATCH, WRAP, Gravity.BOTTOM))
+
+    d.setContentView(overlay)
     d.window?.apply {
         setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
-        setLayout(MATCH, WRAP)
-        setGravity(Gravity.BOTTOM)
+        setLayout(MATCH, MATCH)
         setDimAmount(0.55f)
         attributes = attributes.apply { windowAnimations = android.R.style.Animation_InputMethod }
     }
