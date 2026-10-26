@@ -10,8 +10,8 @@ import android.widget.ImageButton
 import kotlin.math.abs
 
 // Kontrol ketukan di halaman:
-//  - ketuk tepi BAWAH layar = turun satu layar (animasi halus), bisa dimatikan lewat menu
-//  - ketuk tepi ATAS layar  = naik satu layar (animasi halus), bisa dimatikan lewat menu
+//  - ketuk tepi KANAN layar = turun satu layar (animasi halus), bisa dimatikan lewat menu
+//  - ketuk tepi KIRI layar  = naik satu layar (animasi halus), bisa dimatikan lewat menu
 //  - ketuk tengah layar     = tombol menu muncul/hilang (juga di tepi bila fitur tepi dimatikan)
 //  - scroll (arah apa pun)  = tombol menu menutup
 // Setiap kali tombol menu muncul/hilang ada jeda (COOLDOWN_MS) sebelum bisa berubah lagi.
@@ -24,8 +24,11 @@ class FabController(
 ) {
     // ---- Pengaturan (ubah angkanya sesuai selera) ----
     private val COOLDOWN_MS = 700L      // jeda tombol menu, milidetik
-    private val BOTTOM_ZONE = 0.25f     // tinggi area ketuk bawah (25% layar). 0f = matikan
-    private val TOP_ZONE = 0.12f        // tinggi area ketuk atas (12% layar). 0f = matikan
+    private val SIDE_ZONE = 0.18f       // lebar area ketuk kiri & kanan (18% lebar layar). 0f = matikan
+    private val RIGHT_DIR = 1           // ketuk tepi kanan: 1 = turun, -1 = naik
+    private val LEFT_DIR = -1           // ketuk tepi kiri: -1 = naik, 1 = turun (isi 1 agar dua sisi turun)
+    private val BOTTOM_ZONE = 0f        // area ketuk bawah (turun). Contoh 0.25f untuk menyalakan
+    private val TOP_ZONE = 0f           // area ketuk atas (naik). Contoh 0.12f untuk menyalakan
     private val PAGE_FRACTION = 0.9f    // satu ketukan = 90% tinggi layar (sisakan 10% agar nyambung)
     // --------------------------------------------------
 
@@ -37,11 +40,33 @@ class FabController(
         attach()
     }
 
+    // Dipanggil dari MainActivity saat bar sistem (jam, notifikasi, baterai) muncul/hilang
+    // karena digeser dari tepi atas. Saat bar muncul, tombol menu ikut muncul;
+    // saat bar hilang lagi, tombol kembali ke keadaan sebelumnya.
+    private var shownBeforeBars: Boolean? = null
+
+    fun onSystemBars(visible: Boolean) {
+        if (visible) {
+            if (shownBeforeBars == null) shownBeforeBars = shown
+            applyShown(true)
+        } else {
+            val prev = shownBeforeBars
+            shownBeforeBars = null
+            if (prev == false) applyShown(false)
+        }
+    }
+
+    // Ketukan/scroll biasa: tunduk pada jeda
     private fun setShown(show: Boolean) {
         if (show == shown) return
-        val now = SystemClock.uptimeMillis()
-        if (now < lockUntil) return
-        lockUntil = now + COOLDOWN_MS
+        if (SystemClock.uptimeMillis() < lockUntil) return
+        applyShown(show)
+    }
+
+    // Mengubah keadaan tombol dengan animasi (tanpa memeriksa jeda), lalu memulai jeda baru
+    private fun applyShown(show: Boolean) {
+        if (show == shown) return
+        lockUntil = SystemClock.uptimeMillis() + COOLDOWN_MS
         shown = show
 
         val dist = -80 * webView.resources.displayMetrics.density
@@ -95,13 +120,20 @@ class FabController(
                     val quick = e.eventTime - downT < 350
                     val still = abs(e.x - downX) < slop && abs(e.y - downY) < slop
                     if (!multi && quick && still && !isBusy()) {
+                        val w = v.width
                         val h = v.height
                         val edge = edgeOn()
-                        if (edge && BOTTOM_ZONE > 0f && e.y > h * (1f - BOTTOM_ZONE)) {
+                        if (edge && SIDE_ZONE > 0f && e.x > w * (1f - SIDE_ZONE)) {
+                            scrollPage(RIGHT_DIR)
+                            consumed = true
+                        } else if (edge && SIDE_ZONE > 0f && e.x < w * SIDE_ZONE) {
+                            scrollPage(LEFT_DIR)
+                            consumed = true
+                        } else if (edge && BOTTOM_ZONE > 0f && e.y > h * (1f - BOTTOM_ZONE)) {
                             scrollPage(1)
                             consumed = true
                         } else if (edge && TOP_ZONE > 0f && e.y < h * TOP_ZONE) {
-                            scrollPage(-1)
+                            scrollPage(1)
                             consumed = true
                         } else {
                             setShown(!shown)
