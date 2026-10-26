@@ -11,8 +11,8 @@ jobs:
         with: { distribution: temurin, java-version: 17 }
       - uses: gradle/actions/setup-gradle@v3
         with: { gradle-version: 8.7 }
-      - run: gradle assembleDebug
+      - run: gradle assembleRelease
       - uses: actions/upload-artifact@v4
         with:
           name: WebApp-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          path: app/build/outputs/apk/release/app-release.apk
