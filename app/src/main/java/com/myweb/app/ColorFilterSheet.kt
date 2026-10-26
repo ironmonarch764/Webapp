@@ -16,14 +16,16 @@ import android.view.Window
 import android.webkit.WebView
 import android.widget.FrameLayout
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.TextView
+import org.json.JSONObject
 
 private val CF_KEYS = arrayOf("cf_b", "cf_c", "cf_s", "cf_w")
 private const val CF_DEFAULT = 50
 
-// Menerapkan filter warna ke seluruh tampilan WebView (termasuk gambar).
-// Semua slider di tengah (50) = normal, tanpa filter.
+// Filter warna untuk seluruh tampilan WebView (termasuk gambar).
+// Semua slider warna di tengah (50) = normal, tanpa filter.
 fun applyColorFilter(webView: WebView, prefs: SharedPreferences) {
     val b = prefs.getInt("cf_b", CF_DEFAULT)
     val c = prefs.getInt("cf_c", CF_DEFAULT)
@@ -70,6 +72,49 @@ fun applyColorFilter(webView: WebView, prefs: SharedPreferences) {
     webView.setLayerType(View.LAYER_TYPE_HARDWARE, paint)
 }
 
+// Haluskan (blur lembut) dan ketajaman, hanya untuk tag <img> di halaman.
+// 0 dan 0 = mati, tidak ada yang dipasang.
+fun applyImageFx(webView: WebView, prefs: SharedPreferences) {
+    val sm = prefs.getInt("fx_sm", 0)
+    val sh = prefs.getInt("fx_sh", 0)
+
+    val clear = "var o=document.getElementById('__imgfx');if(o)o.remove();" +
+        "var p=document.getElementById('__imgfx_svg');if(p)p.remove();"
+
+    if (sm == 0 && sh == 0) {
+        webView.evaluateJavascript("(function(){" + clear + "})();", null)
+        return
+    }
+
+    val blur = sm / 100f * 1.2f
+    val amt = sh / 100f
+    val center = 1f + 4f * amt
+    val kernel = "0 -" + amt + " 0 -" + amt + " " + center + " -" + amt + " 0 -" + amt + " 0"
+
+    var parts = ""
+    var input = "SourceGraphic"
+    if (sm > 0) {
+        parts += "<feGaussianBlur in='SourceGraphic' stdDeviation='" + blur + "' result='b'/>"
+        input = "b"
+    }
+    if (sh > 0) {
+        parts += "<feConvolveMatrix in='" + input + "' order='3' kernelMatrix='" + kernel +
+            "' preserveAlpha='true'/>"
+    }
+    val svg = "<svg xmlns='http://www.w3.org/2000/svg' width='0' height='0'>" +
+        "<filter id='__imgfx_f' color-interpolation-filters='sRGB'>" + parts + "</filter></svg>"
+
+    val js = "(function(){" + clear +
+        "var d=document.createElement('div');d.id='__imgfx_svg';" +
+        "d.style.cssText='position:absolute;width:0;height:0;overflow:hidden';" +
+        "d.innerHTML=" + JSONObject.quote(svg) + ";" +
+        "(document.body||document.documentElement).appendChild(d);" +
+        "var s=document.createElement('style');s.id='__imgfx';" +
+        "s.textContent='img{filter:url(#__imgfx_f)}';" +
+        "(document.head||document.documentElement).appendChild(s);})();"
+    webView.evaluateJavascript(js, null)
+}
+
 fun showColorFilterSheet(a: Activity, webView: WebView, prefs: SharedPreferences) {
     val match = ViewGroup.LayoutParams.MATCH_PARENT
     val wrap = ViewGroup.LayoutParams.WRAP_CONTENT
@@ -82,7 +127,7 @@ fun showColorFilterSheet(a: Activity, webView: WebView, prefs: SharedPreferences
     fun px(v: Int) = (v * dp).toInt()
 
     val sheetBg = GradientDrawable().apply {
-        setColor(Color.parseColor("#1F2024"))
+        setColor(Color.parseColor("#EE1F2024"))
         val r = px(26).toFloat()
         cornerRadii = floatArrayOf(r, r, r, r, 0f, 0f, 0f, 0f)
     }
@@ -99,37 +144,58 @@ fun showColorFilterSheet(a: Activity, webView: WebView, prefs: SharedPreferences
         setTextColor(Color.WHITE)
     }, LinearLayout.LayoutParams(match, wrap))
 
-    val labels = arrayOf("Kecerahan", "Kontras", "Saturasi", "Dingin / Hangat")
-    fun fmt(p: Int): String {
-        val v = p - 50
-        return if (v > 0) "+" + v else v.toString()
-    }
-    val bars = ArrayList<SeekBar>()
-    for (i in 0..3) {
+    class Slider(val bar: SeekBar, val key: String, val def: Int)
+    val sliders = ArrayList<Slider>()
+
+    // centered = true  -> tengah (50) tampil 0, rentang -50..+50
+    // centered = false -> mulai dari 0, rentang 0..+100
+    // live = true      -> diterapkan saat digeser; false -> saat jari dilepas
+    fun addSlider(label: String, key: String, def: Int, centered: Boolean, live: Boolean, onApply: () -> Unit) {
+        fun fmt(p: Int): String {
+            val v = if (centered) p - 50 else p
+            return if (v > 0) "+" + v else v.toString()
+        }
         val tv = TextView(a).apply {
-            text = labels[i] + ":  " + fmt(prefs.getInt(CF_KEYS[i], CF_DEFAULT))
+            text = label + ":  " + fmt(prefs.getInt(key, def))
             textSize = 14f
             setTextColor(Color.parseColor("#D0D3DC"))
         }
-        root.addView(tv, LinearLayout.LayoutParams(match, wrap).apply { topMargin = px(12) })
+        root.addView(tv, LinearLayout.LayoutParams(match, wrap).apply { topMargin = px(8) })
 
         val sb = SeekBar(a).apply {
             max = 100
-            progress = prefs.getInt(CF_KEYS[i], CF_DEFAULT)
+            progress = prefs.getInt(key, def)
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(s: SeekBar?, p: Int, fromUser: Boolean) {
-                    tv.text = labels[i] + ":  " + fmt(p)
+                    tv.text = label + ":  " + fmt(p)
                     if (!fromUser) return
-                    prefs.edit().putInt(CF_KEYS[i], p).apply()
-                    applyColorFilter(webView, prefs)
+                    prefs.edit().putInt(key, p).apply()
+                    if (live) onApply()
                 }
                 override fun onStartTrackingTouch(s: SeekBar?) {}
-                override fun onStopTrackingTouch(s: SeekBar?) {}
+                override fun onStopTrackingTouch(s: SeekBar?) { if (!live) onApply() }
             })
         }
-        bars.add(sb)
         root.addView(sb, LinearLayout.LayoutParams(match, wrap))
+        sliders.add(Slider(sb, key, def))
     }
+
+    val colorApply: () -> Unit = { applyColorFilter(webView, prefs) }
+    val fxApply: () -> Unit = { applyImageFx(webView, prefs) }
+
+    addSlider("Kecerahan", "cf_b", CF_DEFAULT, true, true, colorApply)
+    addSlider("Kontras", "cf_c", CF_DEFAULT, true, true, colorApply)
+    addSlider("Saturasi", "cf_s", CF_DEFAULT, true, true, colorApply)
+    addSlider("Dingin / Hangat", "cf_w", CF_DEFAULT, true, true, colorApply)
+
+    root.addView(TextView(a).apply {
+        text = "Khusus gambar (diterapkan setelah slider dilepas)"
+        textSize = 12f
+        setTextColor(Color.parseColor("#8A8E99"))
+    }, LinearLayout.LayoutParams(match, wrap).apply { topMargin = px(16) })
+
+    addSlider("Haluskan gambar", "fx_sm", 0, false, false, fxApply)
+    addSlider("Ketajaman gambar", "fx_sh", 0, false, false, fxApply)
 
     val resetBg = GradientDrawable().apply {
         setColor(Color.parseColor("#2A2C33"))
@@ -145,17 +211,20 @@ fun showColorFilterSheet(a: Activity, webView: WebView, prefs: SharedPreferences
         isClickable = true
         setOnClickListener {
             val e = prefs.edit()
-            CF_KEYS.forEach { e.putInt(it, CF_DEFAULT) }
+            sliders.forEach { e.putInt(it.key, it.def) }
             e.apply()
-            bars.forEach { it.progress = CF_DEFAULT }
+            sliders.forEach { it.bar.progress = it.def }
             applyColorFilter(webView, prefs)
+            applyImageFx(webView, prefs)
         }
-    }, LinearLayout.LayoutParams(match, wrap).apply { topMargin = px(18) })
+    }, LinearLayout.LayoutParams(match, wrap).apply { topMargin = px(16) })
 
     // Seluruh layar jadi area ketuk: ketuk di luar panel = tutup (tanpa redup, agar warna terlihat asli)
+    val scroll = ScrollView(a)
+    scroll.addView(root)
     val overlay = FrameLayout(a)
     overlay.setOnClickListener { d.dismiss() }
-    overlay.addView(root, FrameLayout.LayoutParams(match, wrap, Gravity.BOTTOM))
+    overlay.addView(scroll, FrameLayout.LayoutParams(match, wrap, Gravity.BOTTOM))
 
     d.setContentView(overlay)
     d.window?.apply {
@@ -166,3 +235,4 @@ fun showColorFilterSheet(a: Activity, webView: WebView, prefs: SharedPreferences
     }
     d.show()
 }
+
