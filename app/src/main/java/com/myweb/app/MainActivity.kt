@@ -94,6 +94,7 @@ class MainActivity : AppCompatActivity() {
 }
 
     private val autoScroller by lazy { AutoScroller(webView, prefs) }
+    private val autoPanel by lazy { AutoScrollPanel(this, autoScroller, prefs) }
     private var fabCtl: FabController? = null
     private fun onErrorPage(): Boolean = webView.url?.startsWith("file:") == true
 
@@ -590,7 +591,12 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
                 MenuAction("🌐", "Ganti alamat web") { askUrl(cancelable = true) },
                 MenuAction("🔖", "Situs tersimpan") { showSites() },
                 MenuAction("🎨", "Filter warna") { showColorFilterSheet(this, webView, prefs) },
-                MenuAction("⏬", "Auto-scroll & ketuk tepi") { showScrollSheet(this, autoScroller, prefs) },
+                MenuAction("⏬", "Auto-scroll: " + (if (autoPanel.modeOn) "ON" else "OFF")) { autoPanel.toggle() },
+                MenuAction("👆", "Ketuk tepi: " + (if (prefs.getBoolean("edge_on", true)) "ON" else "OFF")) {
+                    val on = !prefs.getBoolean("edge_on", true)
+                    prefs.edit().putBoolean("edge_on", on).apply()
+                    Toast.makeText(this, if (on) "Ketuk tepi aktif" else "Ketuk tepi mati", Toast.LENGTH_SHORT).show()
+                },
                 MenuAction("🧹", "Hapus blokir elemen situs ini") {
                     val key = "blk:" + baseDomain(Uri.parse(webView.url ?: "").host)
                     prefs.edit().remove(key).apply()
