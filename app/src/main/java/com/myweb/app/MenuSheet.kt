@@ -18,6 +18,7 @@ class MenuAction(val icon: String, val label: String, val onClick: () -> Unit)
 
 private val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
 private val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
+private var currentSheet: Dialog? = null
 
 fun showMenuSheet(
     a: Activity,
@@ -27,6 +28,9 @@ fun showMenuSheet(
     onCross: (Boolean) -> Unit
 ) {
     val d = Dialog(a)
+    currentSheet?.dismiss()
+currentSheet = d
+d.setOnDismissListener { if (currentSheet === d) currentSheet = null }
     d.requestWindowFeature(Window.FEATURE_NO_TITLE)
     d.setCancelable(true)
     d.setCanceledOnTouchOutside(true)
