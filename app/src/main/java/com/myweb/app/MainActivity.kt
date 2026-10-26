@@ -85,7 +85,7 @@ class MainActivity : AppCompatActivity() {
     
    private var popupView: WebView? = null
 
-private fun closePopup() {
+   private fun closePopup() {
     val p = popupView ?: return
     popupView = null
     (p.parent as? android.view.ViewGroup)?.removeView(p)
@@ -93,6 +93,8 @@ private fun closePopup() {
     p.destroy()
 }
 
+    private val autoScroller by lazy { AutoScroller(webView, prefs) }
+    
     private fun onErrorPage(): Boolean = webView.url?.startsWith("file:") == true
 
     private fun baseDomain(host: String?): String {
@@ -222,6 +224,7 @@ private fun closePopup() {
     override fun onPause() {
     super.onPause()
     LoginSupport.save()
+    autoScroller.stop()
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -242,7 +245,7 @@ private fun closePopup() {
         webView.setBackgroundColor(Color.BLACK)
         progress = findViewById(R.id.progress)
         findViewById<ImageButton>(R.id.menuBtn).setOnClickListener { showMenu() }
-        setupFabAutoHide()
+        FabController(webView, findViewById<ImageButton>(R.id.menuBtn), { pickerActive }, { prefs.getBoolean("edge_on", true) }, { autoScroller.stop() })
 
         webView.settings.apply {
             javaScriptEnabled = true
@@ -490,6 +493,7 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
             "Ganti alamat web",
             "Situs tersimpan",
             "Filter warna",
+            "Auto-scroll & ketuk tepi",
             "Muat ulang",
             "Ke halaman awal",
             "Blok elemen (ketuk iklan)",
@@ -585,6 +589,7 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
                 MenuAction("🌐", "Ganti alamat web") { askUrl(cancelable = true) },
                 MenuAction("🔖", "Situs tersimpan") { showSites() },
                 MenuAction("🎨", "Filter warna") { showColorFilterSheet(this, webView, prefs) },
+                MenuAction("⏬", "Auto-scroll & ketuk tepi") { showScrollSheet(this, autoScroller, prefs) },
                 MenuAction("🧹", "Hapus blokir elemen situs ini") {
                     val key = "blk:" + baseDomain(Uri.parse(webView.url ?: "").host)
                     prefs.edit().remove(key).apply()
