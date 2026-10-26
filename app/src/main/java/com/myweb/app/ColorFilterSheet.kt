@@ -22,16 +22,13 @@ import android.widget.TextView
 private val CF_KEYS = arrayOf("cf_b", "cf_c", "cf_s", "cf_w")
 private const val CF_DEFAULT = 50
 
-// Setiap situs punya pengaturan sendiri: kunci = nama + ":" + domain situs
-private fun cfKey(i: Int, site: String) = CF_KEYS[i] + ":" + site
-
-// Menerapkan filter warna milik situs ini ke tampilan WebView (termasuk gambar).
+// Menerapkan filter warna ke seluruh tampilan WebView (termasuk gambar).
 // Semua slider di tengah (50) = normal, tanpa filter.
-fun applyColorFilter(webView: WebView, prefs: SharedPreferences, site: String) {
-    val b = prefs.getInt(cfKey(0, site), CF_DEFAULT)
-    val c = prefs.getInt(cfKey(1, site), CF_DEFAULT)
-    val s = prefs.getInt(cfKey(2, site), CF_DEFAULT)
-    val w = prefs.getInt(cfKey(3, site), CF_DEFAULT)
+fun applyColorFilter(webView: WebView, prefs: SharedPreferences) {
+    val b = prefs.getInt("cf_b", CF_DEFAULT)
+    val c = prefs.getInt("cf_c", CF_DEFAULT)
+    val s = prefs.getInt("cf_s", CF_DEFAULT)
+    val w = prefs.getInt("cf_w", CF_DEFAULT)
 
     if (b == CF_DEFAULT && c == CF_DEFAULT && s == CF_DEFAULT && w == CF_DEFAULT) {
         webView.setLayerType(View.LAYER_TYPE_HARDWARE, null)
@@ -73,7 +70,7 @@ fun applyColorFilter(webView: WebView, prefs: SharedPreferences, site: String) {
     webView.setLayerType(View.LAYER_TYPE_HARDWARE, paint)
 }
 
-fun showColorFilterSheet(a: Activity, webView: WebView, prefs: SharedPreferences, site: String) {
+fun showColorFilterSheet(a: Activity, webView: WebView, prefs: SharedPreferences) {
     val match = ViewGroup.LayoutParams.MATCH_PARENT
     val wrap = ViewGroup.LayoutParams.WRAP_CONTENT
 
@@ -97,7 +94,7 @@ fun showColorFilterSheet(a: Activity, webView: WebView, prefs: SharedPreferences
     }
 
     root.addView(TextView(a).apply {
-        text = "🎨 Filter warna: " + (if (site.isEmpty()) "situs ini" else site)
+        text = "🎨 Filter warna"
         textSize = 18f
         setTextColor(Color.WHITE)
     }, LinearLayout.LayoutParams(match, wrap))
@@ -113,12 +110,12 @@ fun showColorFilterSheet(a: Activity, webView: WebView, prefs: SharedPreferences
 
         val sb = SeekBar(a).apply {
             max = 100
-            progress = prefs.getInt(cfKey(i, site), CF_DEFAULT)
+            progress = prefs.getInt(CF_KEYS[i], CF_DEFAULT)
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(s: SeekBar?, p: Int, fromUser: Boolean) {
                     if (!fromUser) return
-                    prefs.edit().putInt(cfKey(i, site), p).apply()
-                    applyColorFilter(webView, prefs, site)
+                    prefs.edit().putInt(CF_KEYS[i], p).apply()
+                    applyColorFilter(webView, prefs)
                 }
                 override fun onStartTrackingTouch(s: SeekBar?) {}
                 override fun onStopTrackingTouch(s: SeekBar?) {}
@@ -142,10 +139,10 @@ fun showColorFilterSheet(a: Activity, webView: WebView, prefs: SharedPreferences
         isClickable = true
         setOnClickListener {
             val e = prefs.edit()
-            for (i in 0..3) e.putInt(cfKey(i, site), CF_DEFAULT)
+            CF_KEYS.forEach { e.putInt(it, CF_DEFAULT) }
             e.apply()
             bars.forEach { it.progress = CF_DEFAULT }
-            applyColorFilter(webView, prefs, site)
+            applyColorFilter(webView, prefs)
         }
     }, LinearLayout.LayoutParams(match, wrap).apply { topMargin = px(18) })
 
