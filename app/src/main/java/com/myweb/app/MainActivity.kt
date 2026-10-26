@@ -94,7 +94,7 @@ class MainActivity : AppCompatActivity() {
 }
 
     private val autoScroller by lazy { AutoScroller(webView, prefs) }
-    
+    private var fabCtl: FabController? = null
     private fun onErrorPage(): Boolean = webView.url?.startsWith("file:") == true
 
     private fun baseDomain(host: String?): String {
@@ -237,15 +237,16 @@ class MainActivity : AppCompatActivity() {
         ViewCompat.setOnApplyWindowInsetsListener(root) { v, insets ->
             val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
             v.setPadding(0, 0, 0, ime.bottom)
+            fabCtl?.onSystemBars(insets.isVisible(WindowInsetsCompat.Type.statusBars()))
             insets
-        }
+     }
 
         webView = findViewById(R.id.webView)
         LoginSupport.setup(webView)
         webView.setBackgroundColor(Color.BLACK)
         progress = findViewById(R.id.progress)
         findViewById<ImageButton>(R.id.menuBtn).setOnClickListener { showMenu() }
-        FabController(webView, findViewById<ImageButton>(R.id.menuBtn), { pickerActive }, { prefs.getBoolean("edge_on", true) }, { autoScroller.stop() })
+        fabCtl = FabController(webView, findViewById<ImageButton>(R.id.menuBtn), { pickerActive }, { prefs.getBoolean("edge_on", true) }, { autoScroller.stop() })
 
         webView.settings.apply {
             javaScriptEnabled = true
