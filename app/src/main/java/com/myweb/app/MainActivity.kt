@@ -372,6 +372,7 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
     resultMsg.sendToTarget()
     return true
 }
+        }
                 }
                 val transport = resultMsg.obj as WebView.WebViewTransport
                 transport.webView = temp
