@@ -258,7 +258,7 @@ private fun closePopup() {
             cacheMode = WebSettings.LOAD_DEFAULT
         
         }
-        webView.setLayerType(View.LAYER_TYPE_HARDWARE, null)
+        applyColorFilter(webView, prefs) 
         CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true)
         webView.addJavascriptInterface(Bridge(), "Android")
 
@@ -489,6 +489,7 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
         val items = arrayOf(
             "Ganti alamat web",
             "Situs tersimpan",
+            "Filter warna",
             "Muat ulang",
             "Ke halaman awal",
             "Blok elemen (ketuk iklan)",
@@ -583,6 +584,7 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
             listOf(
                 MenuAction("🌐", "Ganti alamat web") { askUrl(cancelable = true) },
                 MenuAction("🔖", "Situs tersimpan") { showSites() },
+                MenuAction("🎨", "Filter warna") { showColorFilterSheet(this, webView, prefs) },
                 MenuAction("🧹", "Hapus blokir elemen situs ini") {
                     val key = "blk:" + baseDomain(Uri.parse(webView.url ?: "").host)
                     prefs.edit().remove(key).apply()
