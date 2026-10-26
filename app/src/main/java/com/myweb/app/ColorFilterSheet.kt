@@ -99,20 +99,26 @@ fun showColorFilterSheet(a: Activity, webView: WebView, prefs: SharedPreferences
         setTextColor(Color.WHITE)
     }, LinearLayout.LayoutParams(match, wrap))
 
-    val labels = arrayOf("Kecerahan", "Kontras", "Saturasi", "Dingin  ←  →  Hangat")
+    val labels = arrayOf("Kecerahan", "Kontras", "Saturasi", "Dingin / Hangat")
+    fun fmt(p: Int): String {
+        val v = p - 50
+        return if (v > 0) "+" + v else v.toString()
+    }
     val bars = ArrayList<SeekBar>()
     for (i in 0..3) {
-        root.addView(TextView(a).apply {
-            text = labels[i]
+        val tv = TextView(a).apply {
+            text = labels[i] + ":  " + fmt(prefs.getInt(CF_KEYS[i], CF_DEFAULT))
             textSize = 14f
             setTextColor(Color.parseColor("#D0D3DC"))
-        }, LinearLayout.LayoutParams(match, wrap).apply { topMargin = px(12) })
+        }
+        root.addView(tv, LinearLayout.LayoutParams(match, wrap).apply { topMargin = px(12) })
 
         val sb = SeekBar(a).apply {
             max = 100
             progress = prefs.getInt(CF_KEYS[i], CF_DEFAULT)
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(s: SeekBar?, p: Int, fromUser: Boolean) {
+                    tv.text = labels[i] + ":  " + fmt(p)
                     if (!fromUser) return
                     prefs.edit().putInt(CF_KEYS[i], p).apply()
                     applyColorFilter(webView, prefs)
