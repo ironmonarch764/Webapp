@@ -43,9 +43,10 @@ class MainActivity : AppCompatActivity() {
         get() = prefs.getString("url", "") ?: ""
         set(v) { prefs.edit().putString("url", v).apply(); addSiteIfNew(v) }
 
+    private fun crossKey() = "blockCross:" + baseDomain(Uri.parse(currentUrl).host)
     private var blockCross: Boolean
-        get() = prefs.getBoolean("blockCross", true)
-        set(v) = prefs.edit().putBoolean("blockCross", v).apply()
+    get() = prefs.getBoolean(crossKey(), prefs.getBoolean("blockCross", true))
+    set(v) = prefs.edit().putBoolean(crossKey(), v).apply()
 
     @Volatile private var adHosts: Set<String> = DEFAULT_AD_HOSTS
     @Volatile private var adCss: String = ""
@@ -322,7 +323,7 @@ class MainActivity : AppCompatActivity() {
                 temp.webViewClient = object : WebViewClient() {
                     override fun shouldOverrideUrlLoading(v: WebView, req: WebResourceRequest): Boolean {
                         val u = req.url
-                        if (baseDomain(u.host) == siteBase && !isAd(u.host)) {
+                        if ((baseDomain(u.host) == siteBase || !blockCross) && !isAd(u.host)) {
                             webView.loadUrl(u.toString())
                         } else {
                             Toast.makeText(this@MainActivity, "Popup diblokir", Toast.LENGTH_SHORT).show()
