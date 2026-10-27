@@ -1,0 +1,8 @@
+.gradle/
+membangun/
+aplikasi/bangun/
+properti lokal
+.ide/
+*.iml
+*.apk
+.DS_Store
