@@ -40,4 +40,5 @@ android {
 dependencies {
     implementation("androidx.appcompat:appcompat:1.6.1")
     implementation("androidx.core:core-ktx:1.13.1")
+    implementation("androidx.webkit:webkit:1.11.0")
 }
