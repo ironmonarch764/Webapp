@@ -29,6 +29,7 @@ val PICKER_JS = """
 (function(){
 if(window.__pk){return;} window.__pk=true;
 var sel=null;
+var tk='__PK_TOKEN__';
 var box=document.createElement('div');
 box.style.cssText='position:fixed;z-index:2147483646;pointer-events:none;border:3px solid #f43f5e;background:rgba(244,63,94,.28);display:none;box-sizing:border-box';
 var bar=document.createElement('div');
@@ -91,10 +92,10 @@ btn('Blokir',function(){
   var s=path(sel);
   if(!s){return;}
   sel.style.setProperty('display','none','important');
-  Android.addRule(s);
+  Android.addRule(tk,s);
   cleanup();
 });
-btn('Batal',function(){Android.pickerDone();cleanup();});
+btn('Batal',function(){Android.pickerDone(tk);cleanup();});
 document.documentElement.appendChild(box);
 document.documentElement.appendChild(bar);
 document.addEventListener('click',onClick,true);

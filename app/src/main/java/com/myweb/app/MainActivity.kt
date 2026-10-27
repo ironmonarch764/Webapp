@@ -5,6 +5,7 @@ import android.annotation.SuppressLint
 import android.content.Intent
 import android.graphics.Color
 import android.net.Uri
+import android.net.http.SslError
 import android.os.Build
 import android.os.Bundle
 import android.os.Message
@@ -36,6 +37,9 @@ import java.net.HttpURLConnection
 import java.net.URL
 import kotlin.concurrent.thread
 
+// Berapa kali proses render WebView mati berturut-turut (direset saat sebuah halaman selesai dimuat)
+private var renderGoneCount = 0
+
 class MainActivity : AppCompatActivity() {
 
     private lateinit var webView: WebView
@@ -61,6 +65,12 @@ class MainActivity : AppCompatActivity() {
     private var firstLoad = false
     private var pickerActive = false
     private var restoreY = 0
+    @Volatile private var pickerToken: String? = null
+    private var webViewDead = false
+    private var lastSslToast = 0L
+    private var lastUpgradeUrl = ""
+    private var lastUpgradeAt = 0L
+    private val warnedHttp = HashSet<String>()
 
     private val chooser = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
         fileCallback?.onReceiveValue(WebChromeClient.FileChooserParams.parseResult(r.resultCode, r.data))
@@ -75,10 +85,12 @@ class MainActivity : AppCompatActivity() {
         fun changeUrl() { runOnUiThread { if (onErrorPage()) askUrl(true) } }
 
         @JavascriptInterface
-        fun addRule(sel: String) {
+        fun addRule(token: String, sel: String) {
             runOnUiThread {
-                if (!pickerActive) return@runOnUiThread
+                // Hanya skrip pemilih milik aplikasi yang tahu token ini; iframe/pihak ketiga tidak bisa memanggil
+                if (!pickerActive || token != pickerToken) return@runOnUiThread
                 pickerActive = false
+                pickerToken = null
                 if (sel.length > 300 || sel.contains("{") || sel.contains("}") || sel.contains("\n")) return@runOnUiThread
                 val key = "blk:" + baseDomain(Uri.parse(webView.url ?: "").host)
                 val cur = prefs.getString(key, "") ?: ""
@@ -88,7 +100,9 @@ class MainActivity : AppCompatActivity() {
         }
 
         @JavascriptInterface
-        fun pickerDone() { runOnUiThread { pickerActive = false } }
+        fun pickerDone(token: String) {
+            runOnUiThread { if (token == pickerToken) { pickerActive = false; pickerToken = null } }
+        }
     }
     
    private var popupView: WebView? = null
@@ -105,6 +119,28 @@ class MainActivity : AppCompatActivity() {
     private val autoPanel by lazy { AutoScrollPanel(this, autoScroller, prefs) }
     private var fabCtl: FabController? = null
     private fun onErrorPage(): Boolean = webView.url?.startsWith("file:") == true
+
+    private fun newPickerToken(): String {
+        val b = ByteArray(16)
+        java.security.SecureRandom().nextBytes(b)
+        return b.joinToString("") { "%02x".format(it) }
+    }
+
+    // Proses render WebView mati (biasanya kehabisan memori). WebView ini tidak bisa dipakai lagi:
+    // buat ulang Activity dan lanjutkan dari halaman terakhir yang tersimpan. Tanpa penanganan ini aplikasi ikut mati.
+    private fun handleRenderGone() {
+        if (webViewDead) return
+        webViewDead = true
+        renderGoneCount++
+        if (renderGoneCount >= 3) {
+            Toast.makeText(this, "Halaman terus berhenti karena memori habis. Aplikasi ditutup.", Toast.LENGTH_LONG).show()
+            finish()
+            return
+        }
+        if (renderGoneCount == 2) prefs.edit().remove("last_page").remove("last_scroll").apply()
+        Toast.makeText(this, "Halaman berhenti (memori habis). Memuat ulang...", Toast.LENGTH_SHORT).show()
+        recreate()
+    }
 
     private fun baseDomain(host: String?): String {
         if (host.isNullOrBlank()) return ""
@@ -239,6 +275,7 @@ class MainActivity : AppCompatActivity() {
 
     // Simpan halaman + posisi scroll terakhir supaya aplikasi dibuka lagi di tempat yang sama
     private fun saveReadingPosition() {
+        if (webViewDead) return
         val u = webView.url ?: return
         if (!u.startsWith("http://") && !u.startsWith("https://")) return
         val e = prefs.edit()
@@ -310,6 +347,8 @@ class MainActivity : AppCompatActivity() {
             builtInZoomControls = true
             displayZoomControls = false
             setSupportMultipleWindows(true)
+            allowFileAccess = false
+            allowContentAccess = false
             javaScriptCanOpenWindowsAutomatically = false
             cacheMode = WebSettings.LOAD_DEFAULT
         
@@ -323,7 +362,9 @@ class MainActivity : AppCompatActivity() {
                 val u = req.url
                 val scheme = u.scheme ?: return false
                 if (scheme != "http" && scheme != "https") {
-                    if (scheme == "file") return false
+                    // file: hanya boleh untuk halaman error milik aplikasi; content: tidak pernah diteruskan
+                    if (scheme == "file") return !u.toString().startsWith("file:///android_asset/")
+                    if (scheme == "content") return true
                     if (req.hasGesture()) {
                         try { startActivity(Intent(Intent.ACTION_VIEW, u)) } catch (e: Exception) { }
                     }
@@ -331,6 +372,17 @@ class MainActivity : AppCompatActivity() {
                 }
                 if (!req.isForMainFrame) return false
                 if (isAd(u.host)) return true
+                // Utamakan HTTPS: situs yang disimpan memakai https tidak boleh turun ke http (dengan pengaman agar tidak berputar)
+                if (scheme == "http" && u.port == -1 && currentUrl.startsWith("https://") &&
+                    baseDomain(u.host) == baseDomain(Uri.parse(currentUrl).host)) {
+                    val now = System.currentTimeMillis()
+                    if (!(u.toString() == lastUpgradeUrl && now - lastUpgradeAt < 5000)) {
+                        lastUpgradeUrl = u.toString()
+                        lastUpgradeAt = now
+                        v.loadUrl(u.buildUpon().scheme("https").build().toString())
+                        return true
+                    }
+                }
                 if (!firstLoad && siteBase.isNotEmpty() && blockCross && baseDomain(u.host) != siteBase) {
                     Toast.makeText(this@MainActivity, "Pindah domain diblokir: " + u.host, Toast.LENGTH_SHORT).show()
                     return true
@@ -356,6 +408,12 @@ class MainActivity : AppCompatActivity() {
 
             override fun onPageFinished(v: WebView, url: String?) {
                 if (url == null || url.startsWith("file:")) return
+                renderGoneCount = 0
+                if (url.startsWith("http://")) {
+                    val hh = Uri.parse(url).host ?: ""
+                    if (hh.isNotEmpty() && warnedHttp.add(hh))
+                        Toast.makeText(this@MainActivity, "Situs ini memakai HTTP (tidak terenkripsi)", Toast.LENGTH_LONG).show()
+                }
                 if (firstLoad) {
                     val h = Uri.parse(url).host
                     if (!h.isNullOrEmpty()) {
@@ -375,7 +433,24 @@ class MainActivity : AppCompatActivity() {
             }
 
             override fun onReceivedError(v: WebView, req: WebResourceRequest, err: WebResourceError) {
-                if (req.isForMainFrame) v.loadUrl("file:///android_asset/error.html")
+                // jangan memuat ulang halaman error bila halaman error itu sendiri yang gagal (cegah perulangan)
+                if (req.isForMainFrame && !req.url.toString().startsWith("file:")) v.loadUrl("file:///android_asset/error.html")
+            }
+
+            // Kesalahan sertifikat TLS: selalu dibatalkan (tidak pernah proceed), pengguna diberi tahu
+            override fun onReceivedSslError(v: WebView?, handler: SslErrorHandler?, error: SslError?) {
+                handler?.cancel()
+                val now = System.currentTimeMillis()
+                if (now - lastSslToast > 3000) {
+                    lastSslToast = now
+                    Toast.makeText(this@MainActivity, "Sertifikat situs tidak valid, koneksi dibatalkan", Toast.LENGTH_LONG).show()
+                }
+            }
+
+            @android.annotation.TargetApi(Build.VERSION_CODES.O)
+            override fun onRenderProcessGone(view: WebView?, detail: RenderProcessGoneDetail?): Boolean {
+                handleRenderGone()
+                return true
             }
         }
 
@@ -396,7 +471,23 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
     val transport = resultMsg.obj as WebView.WebViewTransport
     if (blockCross) {
         val temp = WebView(this@MainActivity)
+        val ui = android.os.Handler(android.os.Looper.getMainLooper())
+        var dead = false
+        // View.post() pada view yang tidak pernah dipasang ke layar tidak pernah berjalan, jadi pakai Handler
+        val kill = Runnable {
+            if (!dead) {
+                dead = true
+                temp.stopLoading()
+                temp.destroy()
+            }
+        }
         temp.webViewClient = object : WebViewClient() {
+            @android.annotation.TargetApi(Build.VERSION_CODES.O)
+            override fun onRenderProcessGone(view: WebView?, detail: RenderProcessGoneDetail?): Boolean {
+                ui.post(kill)
+                return true
+            }
+
             override fun shouldOverrideUrlLoading(v: WebView, req: WebResourceRequest): Boolean {
                 val u = req.url
                 if (baseDomain(u.host) == siteBase && !isAd(u.host)) {
@@ -405,10 +496,11 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
                     Toast.makeText(this@MainActivity, "Popup diblokir", Toast.LENGTH_SHORT).show()
                 }
                 v.stopLoading()
-                v.post { v.destroy() }
+                ui.post(kill)
                 return true
             }
         }
+        ui.postDelayed(kill, 15000)
         transport.webView = temp
         resultMsg.sendToTarget()
         return true
@@ -417,8 +509,15 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
     val popup = WebView(this@MainActivity)
     popup.settings.javaScriptEnabled = true
     popup.settings.domStorageEnabled = true
+    popup.settings.allowFileAccess = false
+    popup.settings.allowContentAccess = false
     CookieManager.getInstance().setAcceptThirdPartyCookies(popup, true)
     popup.webViewClient = object : WebViewClient() {
+        @android.annotation.TargetApi(Build.VERSION_CODES.O)
+        override fun onRenderProcessGone(view: WebView?, detail: RenderProcessGoneDetail?): Boolean {
+            closePopup()
+            return true
+        }
         override fun shouldOverrideUrlLoading(v: WebView, req: WebResourceRequest): Boolean = isAd(req.url.host)
     }
     popup.webChromeClient = object : WebChromeClient() {
@@ -454,6 +553,11 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
         }
 
         webView.setDownloadListener { url, _, _, _, _ ->
+            val ds = Uri.parse(url).scheme
+            if (ds != "http" && ds != "https") {
+                Toast.makeText(this, "Jenis unduhan ini tidak didukung", Toast.LENGTH_SHORT).show()
+                return@setDownloadListener
+            }
             try {
                 startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
             } catch (e: Exception) {
@@ -484,6 +588,8 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
 
     override fun onDestroy() {
         closePopup()
+        fabCtl?.release()
+        dismissMenuSheet()
         webView.stopLoading()
         (webView.parent as? android.view.ViewGroup)?.removeView(webView)
         webView.destroy()
@@ -510,22 +616,24 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
 
     private fun applyDns(onReady: () -> Unit) {
         val url = dnsUrl()
+        // callback bisa datang setelah Activity ditutup; jangan sentuh WebView/dialog saat itu
+        val done: () -> Unit = { if (!isDestroyed) onReady() }
         if (!WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE)) {
             if (url != null) Toast.makeText(this, "WebView di HP ini belum mendukung DNS kustom", Toast.LENGTH_LONG).show()
-            onReady()
+            done()
             return
         }
         val ex = ContextCompat.getMainExecutor(this)
         try {
             if (url == null) {
-                ProxyController.getInstance().clearProxyOverride(ex) { DnsProxy.stop(); onReady() }
+                ProxyController.getInstance().clearProxyOverride(ex) { DnsProxy.stop(); done() }
             } else {
                 val port = DnsProxy.start(url)
                 val cfg = ProxyConfig.Builder().addProxyRule("127.0.0.1:$port").addDirect().build()
-                ProxyController.getInstance().setProxyOverride(cfg, ex) { onReady() }
+                ProxyController.getInstance().setProxyOverride(cfg, ex) { done() }
             }
         } catch (e: Exception) {
-            onReady()
+            done()
         }
     }
 
@@ -669,8 +777,9 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
                 MenuAction("🏠", "Awal") { load() },
                 MenuAction("🎯", "Blok elemen") {
                     if (!onErrorPage()) {
+                        val tk = pickerToken ?: newPickerToken().also { pickerToken = it }
                         pickerActive = true
-                        webView.evaluateJavascript(PICKER_JS, null)
+                        webView.evaluateJavascript(PICKER_JS.replace("__PK_TOKEN__", tk), null)
                     }
                 },
                 MenuAction("🧭", "DNS: " + dnsLabel()) { showDnsDialog() }
@@ -754,6 +863,6 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
     }
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
-        webView.saveState(outState)
+        if (!webViewDead) webView.saveState(outState)
     }
 }

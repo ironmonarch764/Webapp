@@ -20,6 +20,12 @@ private val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
 private val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
 private var currentSheet: Dialog? = null
 
+// Dipanggil saat Activity dihancurkan agar referensi statis ke dialog (dan Activity) dilepas
+fun dismissMenuSheet() {
+    try { currentSheet?.dismiss() } catch (e: Exception) { }
+    currentSheet = null
+}
+
 fun showMenuSheet(
     a: Activity,
     quick: List<MenuAction>,

@@ -59,6 +59,9 @@ class FabController(
     // Dibiarkan kosong supaya baris lama di MainActivity tidak membuat build gagal.
     fun onSystemBars(visible: Boolean) {}
 
+    // Dipanggil saat Activity dihancurkan supaya runnable tertunda tidak menahan view/Activity
+    fun release() { handler.removeCallbacksAndMessages(null) }
+
     // Ketukan/scroll biasa: tunduk pada jeda
     private fun setShown(show: Boolean) {
         if (show == shown) return
