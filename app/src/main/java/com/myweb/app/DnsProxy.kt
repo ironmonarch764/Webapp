@@ -60,6 +60,7 @@ object DnsProxy {
         var remote: Socket? = null
         var answered = false
         var isConnect = false
+        var handedOff = false
         try {
             client.soTimeout = 30000
             val inp = BufferedInputStream(client.getInputStream())
@@ -102,6 +103,7 @@ object DnsProxy {
             client.soTimeout = 300000
             val r: Socket = remote ?: return
             r.soTimeout = 300000
+            handedOff = true
             pool.execute { copy(r.getInputStream(), out, client, r) }
             copy(inp, r.getOutputStream(), client, r)
         } catch (e: Exception) {
@@ -110,6 +112,13 @@ object DnsProxy {
             }
             closeQuiet(client)
             closeQuiet(remote)
+        } finally {
+            // Jalur return awal (header kosong/tidak valid, koneksi ditutup sebelum waktunya) tidak pernah
+            // sampai ke copy(), jadi socket harus ditutup di sini agar tidak bocor.
+            if (!handedOff) {
+                closeQuiet(client)
+                closeQuiet(remote)
+            }
         }
     }
 

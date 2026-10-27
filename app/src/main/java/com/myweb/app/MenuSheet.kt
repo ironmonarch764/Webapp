@@ -28,7 +28,7 @@ fun showMenuSheet(
     onCross: (Boolean) -> Unit
 ) {
     val d = Dialog(a)
-    currentSheet?.dismiss()
+    try { currentSheet?.dismiss() } catch (e: Exception) { }
 currentSheet = d
 d.setOnDismissListener { if (currentSheet === d) currentSheet = null }
     d.requestWindowFeature(Window.FEATURE_NO_TITLE)

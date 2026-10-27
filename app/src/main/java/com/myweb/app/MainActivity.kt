@@ -57,7 +57,7 @@ class MainActivity : AppCompatActivity() {
 
     @Volatile private var adHosts: Set<String> = DEFAULT_AD_HOSTS
     @Volatile private var adCss: String = ""
-    private var siteBase: String = ""
+    @Volatile private var siteBase: String = ""
     private var firstLoad = false
     private var pickerActive = false
     private var restoreY = 0
@@ -365,6 +365,8 @@ class MainActivity : AppCompatActivity() {
                 }
                 injectCss(v)
                 injectPreload(v)
+                // efek gambar (haluskan/ketajaman) tersimpan di pengaturan tapi hilang tiap pindah halaman
+                if (prefs.getInt("fx_sm", 0) > 0 || prefs.getInt("fx_sh", 0) > 0) applyImageFx(v, prefs)
                 if (restoreY > 0) {
                     val y = restoreY
                     restoreY = 0
@@ -452,7 +454,11 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
         }
 
         webView.setDownloadListener { url, _, _, _, _ ->
-            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+            try {
+                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+            } catch (e: Exception) {
+                Toast.makeText(this, "Tidak ada aplikasi untuk membuka unduhan ini", Toast.LENGTH_SHORT).show()
+            }
         }
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
@@ -465,10 +471,14 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
         refreshLists(false)
 
         applyDns {
+            var restored = false
             if (savedInstanceState != null) {
                 firstLoad = true
-                webView.restoreState(savedInstanceState)
-            } else if (currentUrl.isBlank()) askUrl(cancelable = false) else resumeOrLoad()
+                restored = webView.restoreState(savedInstanceState) != null
+            }
+            if (!restored) {
+                if (currentUrl.isBlank()) askUrl(cancelable = false) else resumeOrLoad()
+            }
         }
     }
 
