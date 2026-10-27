@@ -15,9 +15,9 @@ android {
     signingConfigs {
         create("shared") {
             storeFile = file("webapp.jks")
-            storePassword = "webapp123"
-            keyAlias = "webapp"
-            keyPassword = "webapp123"
+            storePassword = System.getenv("KEYSTORE_PASSWORD")
+            keyAlias = System.getenv("KEY_ALIAS")
+            keyPassword = System.getenv("KEY_PASSWORD")
         }
     }
     buildTypes {
