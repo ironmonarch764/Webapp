@@ -21,10 +21,14 @@ import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.webkit.ProxyConfig
+import androidx.webkit.ProxyController
+import androidx.webkit.WebViewFeature
 import org.json.JSONObject
 import java.io.ByteArrayInputStream
 import java.io.File
@@ -259,6 +263,13 @@ class MainActivity : AppCompatActivity() {
         } else load()
     }
 
+    private fun preloadOn() = prefs.getBoolean("preload", true)
+
+    private fun injectPreload(v: WebView) {
+        if (!preloadOn()) return
+        v.evaluateJavascript("window.__preOff=0;" + PRELOAD_JS, null)
+    }
+
     private fun restoreScroll(v: WebView, y: Int) {
         // gambar komik sering dimuat belakangan, jadi coba beberapa kali sampai halaman cukup panjang
         for (d in longArrayOf(150, 700, 1500, 2800)) {
@@ -353,6 +364,7 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
                 injectCss(v)
+                injectPreload(v)
                 if (restoreY > 0) {
                     val y = restoreY
                     restoreY = 0
@@ -452,8 +464,112 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
 
         refreshLists(false)
 
-        if (savedInstanceState != null) webView.restoreState(savedInstanceState)
-        else if (currentUrl.isBlank()) askUrl(cancelable = false) else resumeOrLoad()
+        applyDns {
+            if (savedInstanceState != null) {
+                firstLoad = true
+                webView.restoreState(savedInstanceState)
+            } else if (currentUrl.isBlank()) askUrl(cancelable = false) else resumeOrLoad()
+        }
+    }
+
+    override fun onDestroy() {
+        closePopup()
+        webView.stopLoading()
+        (webView.parent as? android.view.ViewGroup)?.removeView(webView)
+        webView.destroy()
+        DnsProxy.stop()
+        super.onDestroy()
+    }
+
+    // ---------- DNS kustom (DNS-over-HTTPS lewat proxy lokal) ----------
+    private fun dnsUrl(): String? {
+        val m = prefs.getString("dns", "off") ?: "off"
+        return when (m) {
+            "cloudflare", "google" -> DnsProxy.PRESETS[m]
+            "custom" -> prefs.getString("dns_custom", "")?.takeIf { it.startsWith("https://") }
+            else -> null
+        }
+    }
+
+    private fun dnsLabel(): String = when (prefs.getString("dns", "off")) {
+        "cloudflare" -> "Cloudflare"
+        "google" -> "Google"
+        "custom" -> "Kustom"
+        else -> "Sistem"
+    }
+
+    private fun applyDns(onReady: () -> Unit) {
+        val url = dnsUrl()
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE)) {
+            if (url != null) Toast.makeText(this, "WebView di HP ini belum mendukung DNS kustom", Toast.LENGTH_LONG).show()
+            onReady()
+            return
+        }
+        val ex = ContextCompat.getMainExecutor(this)
+        try {
+            if (url == null) {
+                ProxyController.getInstance().clearProxyOverride(ex) { DnsProxy.stop(); onReady() }
+            } else {
+                val port = DnsProxy.start(url)
+                val cfg = ProxyConfig.Builder().addProxyRule("127.0.0.1:$port").addDirect().build()
+                ProxyController.getInstance().setProxyOverride(cfg, ex) { onReady() }
+            }
+        } catch (e: Exception) {
+            onReady()
+        }
+    }
+
+    private fun setDns(mode: String) {
+        prefs.edit().putString("dns", mode).apply()
+        applyDns {
+            Toast.makeText(this, "DNS: " + dnsLabel(), Toast.LENGTH_SHORT).show()
+            if (onErrorPage()) load() else webView.reload()
+        }
+    }
+
+    private fun showDnsDialog() {
+        val names = arrayOf("Sistem (bawaan HP)", "Cloudflare (1.1.1.1)", "Google (8.8.8.8)", "Kustom (alamat DoH)")
+        val keys = arrayOf("off", "cloudflare", "google", "custom")
+        val cur = keys.indexOf(prefs.getString("dns", "off")).coerceAtLeast(0)
+        AlertDialog.Builder(this)
+            .setTitle("DNS")
+            .setSingleChoiceItems(names, cur) { d, i ->
+                d.dismiss()
+                if (keys[i] == "custom") askCustomDns() else setDns(keys[i])
+            }
+            .setNegativeButton("Batal", null)
+            .show()
+    }
+
+    private fun askCustomDns() {
+        val input = EditText(this).apply {
+            hint = "https://.../dns-query"
+            inputType = InputType.TYPE_TEXT_VARIATION_URI
+            setText(prefs.getString("dns_custom", ""))
+            setSelection(text.length)
+        }
+        val box = FrameLayout(this).apply {
+            val m = (20 * resources.displayMetrics.density).toInt()
+            setPadding(m, m / 2, m, 0); addView(input)
+        }
+        val dlg = AlertDialog.Builder(this)
+            .setTitle("Alamat DoH (format JSON)")
+            .setView(box)
+            .setPositiveButton("Simpan", null)
+            .setNegativeButton("Batal", null)
+            .create()
+        dlg.setOnShowListener {
+            dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val u = input.text.toString().trim()
+                if (!u.startsWith("https://") || u.length < 12) input.error = "Harus diawali https://"
+                else {
+                    prefs.edit().putString("dns_custom", u).apply()
+                    setDns("custom")
+                    dlg.dismiss()
+                }
+            }
+        }
+        dlg.show()
     }
 
     @Suppress("DEPRECATION")
@@ -535,90 +651,6 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
         dlg.show()
     }
 
-    private fun oldMenu() {
-        val items = arrayOf(
-            "Ganti alamat web",
-            "Situs tersimpan",
-            "Filter warna",
-            "Auto-scroll & ketuk tepi",
-            "Muat ulang",
-            "Ke halaman awal",
-            "Blok elemen (ketuk iklan)",
-            "Hapus blokir elemen situs ini",
-            "Perbarui daftar iklan",
-            if (blockCross) "Pindah domain: DIBLOKIR (ketuk untuk izinkan)" else "Pindah domain: DIIZINKAN (ketuk untuk blokir)"
-        )
-        AlertDialog.Builder(this)
-            .setItems(items) { _, i ->
-                when (i) {
-                    0 -> askUrl(cancelable = true)
-                    1 -> webView.reload()
-                    2 -> load()
-                    3 -> {
-                        if (!onErrorPage()) {
-                            pickerActive = true
-                            webView.evaluateJavascript(PICKER_JS, null)
-                        }
-                    }
-                    4 -> {
-                        val key = "blk:" + baseDomain(Uri.parse(webView.url ?: "").host)
-                        prefs.edit().remove(key).apply()
-                        webView.reload()
-                        Toast.makeText(this, "Blokir elemen situs ini dihapus", Toast.LENGTH_SHORT).show()
-                    }
-                    5 -> {
-                        Toast.makeText(this, "Mengunduh daftar iklan...", Toast.LENGTH_SHORT).show()
-                        refreshLists(true)
-                    }
-                    6 -> {
-                        blockCross = !blockCross
-                        Toast.makeText(this, if (blockCross) "Pindah domain diblokir" else "Pindah domain diizinkan", Toast.LENGTH_SHORT).show()
-                    }
-                }
-            }.show()
-    }
-    
-    private var fabShown = true
-
-    private fun setFab(show: Boolean) {
-        if (show == fabShown) return
-        fabShown = show
-        val fab = findViewById<ImageButton>(R.id.menuBtn)
-        val dist = 80 * resources.displayMetrics.density
-        if (show) {
-            fab.visibility = View.VISIBLE
-            fab.animate().alpha(1f).translationY(0f).setDuration(180).start()
-        } else {
-            fab.animate().alpha(0f).translationY(dist).setDuration(180)
-                .withEndAction { if (!fabShown) fab.visibility = View.INVISIBLE }
-                .start()
-        }
-    }
-
-    @SuppressLint("ClickableViewAccessibility")
-    private fun setupFabAutoHide() {
-        val slop = android.view.ViewConfiguration.get(this).scaledTouchSlop
-        var downX = 0f
-        var downY = 0f
-        webView.setOnScrollChangeListener { _, _, scrollY, _, oldY ->
-            val dy = scrollY - oldY
-            if (scrollY < 10 || dy < -12) {
-                setFab(true)
-            } else if (dy > 12) {
-                setFab(false)
-            }
-        }
-        webView.setOnTouchListener { _, e ->
-            if (e.action == android.view.MotionEvent.ACTION_DOWN) {
-                downX = e.x
-                downY = e.y
-            } else if (e.action == android.view.MotionEvent.ACTION_UP) {
-                if (Math.abs(e.x - downX) < slop && Math.abs(e.y - downY) < slop) setFab(true)
-            }
-            false
-        }
-    }
-
     private fun showMenu() {
         showMenuSheet(
             this,
@@ -630,13 +662,20 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
                         pickerActive = true
                         webView.evaluateJavascript(PICKER_JS, null)
                     }
-                }
+                },
+                MenuAction("🧭", "DNS: " + dnsLabel()) { showDnsDialog() }
             ),
             listOf(
                 MenuAction("🌐", "Ganti alamat web") { askUrl(cancelable = true) },
                 MenuAction("🔖", "Situs tersimpan") { showSites() },
                 MenuAction("🎨", "Filter warna") { showColorFilterSheet(this, webView, prefs) },
                 MenuAction("⏬", "Auto-scroll: " + (if (autoPanel.modeOn) "ON" else "OFF")) { autoPanel.toggle() },
+                MenuAction("🖼️", "Muat gambar awal: " + (if (preloadOn()) "ON" else "OFF")) {
+                    val on = !preloadOn()
+                    prefs.edit().putBoolean("preload", on).apply()
+                    if (on) injectPreload(webView) else webView.evaluateJavascript("window.__preOff=1", null)
+                    Toast.makeText(this, if (on) "Muat gambar awal aktif" else "Muat gambar awal mati", Toast.LENGTH_SHORT).show()
+                },
                 MenuAction("👆", "Ketuk tepi: " + (if (prefs.getBoolean("edge_on", true)) "ON" else "OFF")) {
                     val on = !prefs.getBoolean("edge_on", true)
                     prefs.edit().putBoolean("edge_on", on).apply()

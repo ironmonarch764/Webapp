@@ -114,7 +114,12 @@ d.setOnDismissListener { if (currentSheet === d) currentSheet = null }
     // Seluruh layar jadi area ketuk: ketuk di luar menu = tutup
     val overlay = FrameLayout(a)
     overlay.setOnClickListener { d.dismiss() }
-    overlay.addView(root, FrameLayout.LayoutParams(MATCH, WRAP, Gravity.BOTTOM))
+    // ScrollView: kalau menu lebih tinggi dari layar (mis. HP miring), bisa digulir
+    val sv = android.widget.ScrollView(a).apply {
+        isVerticalScrollBarEnabled = false
+        addView(root)
+    }
+    overlay.addView(sv, FrameLayout.LayoutParams(MATCH, WRAP, Gravity.BOTTOM))
 
     d.setContentView(overlay)
     d.window?.apply {
