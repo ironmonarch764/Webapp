@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<data-extraction-rules>
+    <cloud-backup>
+        <!-- Data WebView berisi cookie/sesi login: jangan ikut cadangan cloud -->
+        <exclude domain="root" path="app_webview" />
+    </cloud-backup>
+</data-extraction-rules>

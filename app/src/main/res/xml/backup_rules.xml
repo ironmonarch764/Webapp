@@ -1,1 +1,5 @@
-
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <!-- Data WebView berisi cookie/sesi login: jangan ikut cadangan cloud -->
+    <exclude domain="root" path="app_webview" />
+</full-backup-content>
