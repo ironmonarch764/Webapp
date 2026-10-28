@@ -359,7 +359,7 @@ class MainActivity : AppCompatActivity() {
             val pending = prefs.getString("banner_pending", null)
             if (pending != null) prefs.edit().remove("banner_pending").apply()
             val msg = if (prevExit != null) "Aplikasi sebelumnya berhenti: " + prevExit + ". Ketuk untuk melihat log." else pending
-            if (msg != null) showRedBanner(this, msg) { showLogDialog(this) }
+            if (msg != null) showRedBanner(this, msg) { showLogDialog(this, sharedRules.summary()) }
         }
 
         val root = findViewById<View>(android.R.id.content)

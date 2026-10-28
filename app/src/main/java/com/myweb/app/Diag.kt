@@ -3,18 +3,21 @@ package com.myweb.app
 import android.app.Activity
 import android.app.ActivityManager
 import android.app.ApplicationExitInfo
-import android.content.ClipData
-import android.content.ClipboardManager
+import android.content.ContentValues
 import android.content.Context
+import android.content.Intent
 import android.content.SharedPreferences
 import android.graphics.Color
 import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
 import android.view.Gravity
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
+import androidx.core.content.FileProvider
 import java.io.File
 
 // ---------------------------------------------------------------------------------------------
@@ -185,31 +188,12 @@ fun showRedBanner(a: Activity, text: String, onTap: () -> Unit) {
     }
 }
 
-fun showLogDialog(a: Activity) {
-    val text = readLog(a)
-    val shown = if (text.isEmpty()) "(log masih kosong)" else text.takeLast(12000)
-    AlertDialog.Builder(a)
-        .setTitle("Log aplikasi")
-        .setMessage(shown)
-        .setPositiveButton("Salin") { _, _ ->
-            val cm = a.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-            cm.setPrimaryClip(ClipData.newPlainText("log", text))
-            Toast.makeText(a, "Log disalin", Toast.LENGTH_SHORT).show()
-        }
-        .setNegativeButton("Hapus") { _, _ ->
-            clearLog(a)
-            Toast.makeText(a, "Log dihapus", Toast.LENGTH_SHORT).show()
-        }
-        .setNeutralButton("Tutup", null)
-        .show()
-}
-
 private fun ago(text: String?, at: Long): String {
     if (text == null) return "belum pernah"
     return text + " (" + (System.currentTimeMillis() - at) / 60000 + " menit lalu)"
 }
 
-fun showDiagDialog(a: Activity, prefs: SharedPreferences, filterSummary: String) {
+fun diagText(a: Activity, prefs: SharedPreferences, filterSummary: String): String {
     val sb = StringBuilder()
     val am = a.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
     val mi = ActivityManager.MemoryInfo()
@@ -217,6 +201,7 @@ fun showDiagDialog(a: Activity, prefs: SharedPreferences, filterSummary: String)
     sb.append("RAM kosong: ").append(mi.availMem / 1048576).append(" MB dari ").append(mi.totalMem / 1048576).append(" MB")
     if (mi.lowMemory) sb.append(" (RENDAH)")
     sb.append("\nBatas memori aplikasi: ").append(am.memoryClass).append(" MB")
+    sb.append("\nAndroid: ").append(Build.VERSION.SDK_INT).append(", perangkat: ").append(Build.MANUFACTURER).append(" ").append(Build.MODEL)
     sb.append("\nFilter kosmetik: ").append(if (prefs.getBoolean("cosmetic", false)) "ON" else "OFF")
     sb.append("\nDaftar filter: ").append(filterSummary)
     sb.append("\n\nRenderer WebView mati terakhir: ")
@@ -236,10 +221,77 @@ fun showDiagDialog(a: Activity, prefs: SharedPreferences, filterSummary: String)
             }
         } catch (e: Exception) { }
     }
+    return sb.toString()
+}
+
+// Android 10+: simpan ke folder Unduhan lewat MediaStore (tanpa izin penyimpanan)
+@android.annotation.TargetApi(Build.VERSION_CODES.Q)
+private fun saveToDownloads(a: Activity, name: String, text: String): Boolean {
+    return try {
+        val v = ContentValues()
+        v.put(MediaStore.Downloads.DISPLAY_NAME, name)
+        v.put(MediaStore.Downloads.MIME_TYPE, "text/plain")
+        v.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+        val uri = a.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, v)
+        if (uri == null) {
+            false
+        } else {
+            a.contentResolver.openOutputStream(uri)?.use { it.write(text.toByteArray(Charsets.UTF_8)) }
+            true
+        }
+    } catch (e: Exception) { false }
+}
+
+/**
+ * Satu klik: info diagnosa + seluruh log digabung menjadi satu file .txt, salinannya disimpan di Unduhan
+ * (Android 10+) dan menu kirim dibuka (bisa langsung dikirim ke aplikasi lain atau disimpan).
+ */
+fun exportReport(a: Activity, prefs: SharedPreferences, filterSummary: String) {
+    try {
+        val stamp = java.text.SimpleDateFormat("MMdd-HHmmss", java.util.Locale.US).format(java.util.Date())
+        val name = "webapp-diagnosa-" + stamp + ".txt"
+        val text = "=== INFO DIAGNOSA ===\n" + diagText(a, prefs, filterSummary) + "\n\n=== LOG ===\n" + readLog(a)
+        var saved = false
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) saved = saveToDownloads(a, name, text)
+        val dir = File(a.cacheDir, "export")
+        dir.mkdirs()
+        val f = File(dir, name)
+        f.writeText(text)
+        val uri = FileProvider.getUriForFile(a, a.packageName + ".files", f)
+        val send = Intent(Intent.ACTION_SEND)
+        send.type = "text/plain"
+        send.putExtra(Intent.EXTRA_STREAM, uri)
+        send.putExtra(Intent.EXTRA_SUBJECT, "Diagnosa WebApp")
+        send.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        a.startActivity(Intent.createChooser(send, "Kirim diagnosa (.txt)"))
+        if (saved) Toast.makeText(a, "Disimpan juga di Unduhan: " + name, Toast.LENGTH_LONG).show()
+    } catch (e: Exception) {
+        Toast.makeText(a, "Gagal mengekspor: " + e.javaClass.simpleName, Toast.LENGTH_LONG).show()
+    }
+}
+
+fun showLogDialog(a: Activity, filterSummary: String) {
+    val prefs = a.getSharedPreferences("cfg", Context.MODE_PRIVATE)
+    val text = readLog(a)
+    val shown = if (text.isEmpty()) "(log masih kosong)" else text.takeLast(12000)
+    AlertDialog.Builder(a)
+        .setTitle("Log aplikasi")
+        .setMessage(shown)
+        .setPositiveButton("Ekspor .txt") { _, _ -> exportReport(a, prefs, filterSummary) }
+        .setNegativeButton("Hapus") { _, _ ->
+            clearLog(a)
+            Toast.makeText(a, "Log dihapus", Toast.LENGTH_SHORT).show()
+        }
+        .setNeutralButton("Tutup", null)
+        .show()
+}
+
+fun showDiagDialog(a: Activity, prefs: SharedPreferences, filterSummary: String) {
     AlertDialog.Builder(a)
         .setTitle("Info diagnosa")
-        .setMessage(sb.toString())
-        .setPositiveButton("Tutup", null)
-        .setNeutralButton("Lihat log") { _, _ -> showLogDialog(a) }
+        .setMessage(diagText(a, prefs, filterSummary))
+        .setPositiveButton("Ekspor .txt") { _, _ -> exportReport(a, prefs, filterSummary) }
+        .setNegativeButton("Lihat log") { _, _ -> showLogDialog(a, filterSummary) }
+        .setNeutralButton("Tutup", null)
         .show()
 }
