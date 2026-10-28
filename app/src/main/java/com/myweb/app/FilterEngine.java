@@ -44,9 +44,11 @@ public final class FilterEngine {
 
     static final int MAX_LINE = 2000;
     static final int MAX_SELECTOR = 250;
-    static final int MAX_GENERIC = 3000;
+    static final int MAX_GENERIC = 3000;          // hanya berlaku bila aturan umum diaktifkan (genericCosmetic)
     static final int MAX_DOMAIN_RULES = 60000;
-    static final int MAX_CSS_CHARS = 400000;
+    static final int MAX_PAGE_RULES = 500;        // batas aturan CSS yang disuntikkan ke SATU halaman
+    static final int MAX_CSS_CHARS = 60000;
+    static final int MIN_ACCEPTED = 50;
 
     private static final String[] BAD_SELECTOR = {
         ":-abp-", ":has-text", ":xpath", ":matches", ":style(", ":remove(", ":upward", ":contains(",
@@ -292,9 +294,11 @@ public final class FilterEngine {
                 if (u != null) out.removeAll(u);
             }
             StringBuilder css = new StringBuilder();
+            int n = 0;
             for (String sel : out) {
-                if (css.length() + sel.length() + 28 > MAX_CSS_CHARS) break;
+                if (n >= MAX_PAGE_RULES || css.length() + sel.length() + 28 > MAX_CSS_CHARS) break;
                 css.append(sel).append("{display:none!important}\n");
+                n++;
             }
             return css.toString();
         }
@@ -322,6 +326,7 @@ public final class FilterEngine {
         final HashMap<String, HashSet<String>> unhideByDomain = new HashMap<String, HashSet<String>>();
         final HashSet<String> genericUnhide = new HashSet<String>();
         private final boolean cosmetic;
+        private boolean genericOn = false;
         private int domainRuleCount;
         private int nSkip, nBlock, nAllow, nPopup, nCosmetic, nUnsupported, nInvalid, nDropped, nCrashed;
 
@@ -334,6 +339,16 @@ public final class FilterEngine {
                     if (h != null) block.add(h);
                 }
             }
+        }
+
+        /**
+         * Aturan kosmetik UMUM (##selector tanpa domain) mati secara bawaan: ribuan selector atribut yang dievaluasi
+         * ke setiap elemen membuat WebView boros CPU/memori (HP panas, renderer mati), dan juga ikut menyembunyikan
+         * elemen umpan yang memicu popup anti-adblock. Aturan khusus domain tidak terpengaruh.
+         */
+        public Builder genericCosmetic(boolean on) {
+            this.genericOn = on;
+            return this;
         }
 
         /** Jumlah aturan jaringan yang diterima (untuk memvalidasi unduhan). */
@@ -522,6 +537,7 @@ public final class FilterEngine {
                 return R_COSMETIC;
             }
             if (domPart.isEmpty()) {
+                if (!genericOn) return R_UNSUPPORTED;
                 if (generic.size() >= MAX_GENERIC) { nDropped++; return R_UNSUPPORTED; }
                 generic.add(sel);
                 return R_COSMETIC;
@@ -553,7 +569,46 @@ public final class FilterEngine {
         }
     }
 
-    /** Jumlah aturan jaringan valid di file; dipakai untuk menolak unduhan yang bukan daftar filter (HTML, kosong, dst). */
+    /**
+     * Apakah file ini tampak seperti daftar filter. Unduhan yang bukan daftar (halaman login Wi-Fi, error HTML, kosong)
+     * tidak boleh menimpa daftar yang sudah bagus. Lulus bila ada cukup aturan jaringan yang dikenali, ATAU berawal
+     * dengan header khas daftar adblock ("[Adblock ..." / komentar "!") tanpa tanda HTML dan cukup panjang
+     * (daftar yang isinya kebanyakan kosmetik/path, mis. ABPindo, hanya sedikit aturan domain murni).
+     */
+    public static boolean looksLikeList(File f, int kind) {
+        if (countAccepted(f, kind) >= MIN_ACCEPTED) return true;
+        BufferedReader r = null;
+        try {
+            r = new BufferedReader(new InputStreamReader(new FileInputStream(f), StandardCharsets.UTF_8));
+            boolean header = false;
+            boolean html = false;
+            int lines = 0;
+            String line;
+            while ((line = r.readLine()) != null) {
+                String t = line.trim();
+                if (t.length() > 0 && t.charAt(0) == '\uFEFF') t = t.substring(1).trim();
+                if (t.isEmpty()) continue;
+                lines++;
+                if (lines == 1) {
+                    String low = t.toLowerCase(Locale.ROOT);
+                    header = (t.charAt(0) == '[' && low.startsWith("[adblock")) || t.charAt(0) == '!';
+                }
+                if (lines <= 20) {
+                    String low = t.toLowerCase(Locale.ROOT);
+                    if (low.contains("<html") || low.contains("<!doctype") || low.contains("<body")) html = true;
+                }
+            }
+            return header && !html && lines >= MIN_ACCEPTED;
+        } catch (IOException e) {
+            return false;
+        } finally {
+            if (r != null) {
+                try { r.close(); } catch (IOException e) { /* abaikan */ }
+            }
+        }
+    }
+
+    /** Jumlah aturan jaringan valid di file. */
     public static int countAccepted(File f, int kind) {
         Builder b = new Builder(null, false);
         try {
