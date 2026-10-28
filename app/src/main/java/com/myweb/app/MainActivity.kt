@@ -6,6 +6,7 @@ import android.content.Intent
 import android.graphics.Color
 import android.net.Uri
 import android.net.http.SslError
+import android.util.Log
 import android.os.Build
 import android.os.Bundle
 import android.os.Message
@@ -40,6 +41,10 @@ import kotlin.concurrent.thread
 // Berapa kali proses render WebView mati berturut-turut (direset saat sebuah halaman selesai dimuat)
 private var renderGoneCount = 0
 
+// Hasil parse daftar filter dipakai bersama antar Activity: recreate() tidak perlu parse ulang
+@Volatile private var sharedRules: FilterEngine.Rules = FilterEngine.Builder(DEFAULT_AD_HOSTS, false).build()
+@Volatile private var sharedSig = ""
+
 class MainActivity : AppCompatActivity() {
 
     private lateinit var webView: WebView
@@ -52,6 +57,7 @@ class MainActivity : AppCompatActivity() {
         set(v) {
             prefs.edit().putString("url", v).remove("last_page").remove("last_scroll").apply()
             addSiteIfNew(v)
+            configBase = baseDomain(Uri.parse(v).host)
         }
 
     private fun crossKey() = "blockCross:" + baseDomain(Uri.parse(currentUrl).host)
@@ -59,8 +65,7 @@ class MainActivity : AppCompatActivity() {
     get() = prefs.getBoolean(crossKey(), prefs.getBoolean("blockCross", true))
     set(v) = prefs.edit().putBoolean(crossKey(), v).apply()
 
-    @Volatile private var adHosts: Set<String> = DEFAULT_AD_HOSTS
-    @Volatile private var adCss: String = ""
+    @Volatile private var configBase: String = ""
     @Volatile private var siteBase: String = ""
     private var firstLoad = false
     private var pickerActive = false
@@ -142,82 +147,87 @@ class MainActivity : AppCompatActivity() {
         recreate()
     }
 
-    private fun baseDomain(host: String?): String {
-        if (host.isNullOrBlank()) return ""
-        val h = host.lowercase()
-        val p = h.split(".")
-        if (p.size <= 2) return h
-        val sld = setOf("co", "com", "or", "web", "net", "org", "ac", "go", "my", "sch")
-        return if (p.last().length == 2 && p[p.size - 2] in sld) p.takeLast(3).joinToString(".")
-        else p.takeLast(2).joinToString(".")
+    private fun baseDomain(host: String?): String = PublicSuffix.registrableDomain(host)
+
+    // Pihak pertama = situs yang sedang dibuka ATAU alamat yang disimpan pengguna. siteBase baru terisi setelah halaman
+    // pertama selesai, jadi tanpa configBase situs utama sendiri bisa terblokir saat pemuatan pertama.
+    private fun isFirstParty(host: String): Boolean {
+        val b = baseDomain(host)
+        return b.isNotEmpty() && (b == siteBase || b == configBase)
     }
 
     private fun isAd(host: String?): Boolean {
-        if (host.isNullOrEmpty()) return false
-        if (siteBase.isNotEmpty() && baseDomain(host) == siteBase) return false
-        val set = adHosts
-        var h = host.lowercase()
-        while (h.contains('.')) {
-            if (set.contains(h)) return true
-            h = h.substringAfter('.')
-        }
-        return false
+        if (host.isNullOrEmpty() || isFirstParty(host)) return false
+        return sharedRules.isBlocked(host)
     }
 
-    private val domainRe = Regex("^[a-z0-9][a-z0-9.-]*\\.[a-z]{2,}$")
-    private val okOpts = setOf("third-party", "3p", "important", "popup", "all")
-    private val badCss = listOf(":-abp-", ":has-text", ":xpath", ":matches", ":style(", ":remove(", ":upward", ":contains(", "+js(")
+    // Untuk jendela popup dan pengalihan otomatis: aturan $popup ikut berlaku
+    private fun isPopupAd(host: String?): Boolean {
+        if (host.isNullOrEmpty() || isFirstParty(host)) return false
+        return sharedRules.isBlocked(host) || sharedRules.isPopupBlocked(host)
+    }
 
     private fun parseLists() {
-        val hosts = HashSet<String>(DEFAULT_AD_HOSTS)
-        val css = StringBuilder()
-        var cssCount = 0
+        val cosmetic = prefs.getBoolean("cosmetic", false)
+        val files = LISTS.indices.map { File(filesDir, "list$it.txt") }
+        val sig = files.joinToString("|") { if (it.exists()) it.length().toString() + ":" + it.lastModified() else "-" } + "|c=" + cosmetic
+        if (sig == sharedSig) return
+        val b = FilterEngine.Builder(DEFAULT_AD_HOSTS, cosmetic)
         for (i in LISTS.indices) {
-            val f = File(filesDir, "list$i.txt")
+            val f = files[i]
             if (!f.exists()) continue
-            val domainList = i <= 1
+            val kind = if (i <= 1) FilterEngine.KIND_DOMAIN else FilterEngine.KIND_ABP
             try {
-                f.useLines { lines ->
-                    for (raw in lines) {
-                        val line = raw.trim()
-                        if (line.isEmpty() || line[0] == '!' || line[0] == '[') continue
-                        if (line.startsWith("@@")) continue
-                        if (line.startsWith("##")) {
-                            if (cssCount < 0 && line.length < 200 && badCss.none { line.contains(it) }) {
-                                css.append(line, 2, line.length).append("{display:none!important}\n")
-                                cssCount++
-                            }
-                        } else if (line.startsWith("||")) {
-                            val rest = line.substring(2)
-                            val end = rest.indexOfFirst { it == '^' || it == '$' || it == '/' || it == '*' || it == ':' || it == '|' }
-                            val dom = (if (end < 0) rest else rest.substring(0, end)).lowercase()
-                            val opts: String? = when {
-                                end < 0 -> ""
-                                rest[end] == '^' -> {
-                                    val t = rest.substring(end + 1)
-                                    if (t.isEmpty()) "" else if (t[0] == '$') t.substring(1) else null
-                                }
-                                rest[end] == '$' -> rest.substring(end + 1)
-                                else -> null
-                            }
-                            if (opts != null && domainRe.matches(dom) &&
-                                (opts.isEmpty() || opts.split(",").all { it in okOpts })) {
-                                hosts.add(dom)
-                            }
-                        } else if (domainList && line[0] != '#') {
-                            val parts = line.split(Regex("\\s+"))
-                            val cand = if (parts.size >= 2 && (parts[0] == "0.0.0.0" || parts[0] == "127.0.0.1")) parts[1]
-                            else if (parts.size == 1) parts[0] else null
-                            if (cand != null && cand != "localhost" && domainRe.matches(cand.lowercase())) {
-                                hosts.add(cand.lowercase())
-                            }
-                        }
+                FilterEngine.addFile(b, f, kind)
+            } catch (e: Exception) {
+                Log.w("AdBlock", "daftar #" + i + " tidak terbaca penuh: " + e.javaClass.simpleName)
+            }
+        }
+        sharedRules = b.build()
+        sharedSig = sig
+        Log.i("AdBlock", sharedRules.summary())
+    }
+
+    // Unduh ke file sementara, validasi isinya, baru ganti file lama (rename). Gagal/tidak valid: file lama tetap dipakai.
+    private fun downloadValidated(url: String, dest: File, valid: (File) -> Boolean): Boolean {
+        val tmp = File(filesDir, dest.name + ".tmp")
+        var c: HttpURLConnection? = null
+        try {
+            val conn = URL(url).openConnection() as HttpURLConnection
+            c = conn
+            conn.connectTimeout = 15000
+            conn.readTimeout = 30000
+            conn.instanceFollowRedirects = true
+            if (conn.responseCode != 200) {
+                Log.w("AdBlock", "unduh gagal: HTTP " + conn.responseCode)
+                return false
+            }
+            conn.inputStream.use { inp ->
+                tmp.outputStream().use { out ->
+                    val buf = ByteArray(16384)
+                    var total = 0L
+                    while (true) {
+                        val n = inp.read(buf)
+                        if (n < 0) break
+                        total += n
+                        if (total > 30_000_000L) throw java.io.IOException("terlalu besar")
+                        out.write(buf, 0, n)
                     }
                 }
-            } catch (e: Exception) { }
+            }
+            if (!valid(tmp)) {
+                Log.w("AdBlock", "isi unduhan bukan daftar yang valid; salinan lama dipertahankan")
+                return false
+            }
+            if (!tmp.renameTo(dest)) tmp.copyTo(dest, overwrite = true)
+            return true
+        } catch (e: Exception) {
+            Log.w("AdBlock", "unduh gagal: " + e.javaClass.simpleName)
+            return false
+        } finally {
+            tmp.delete()
+            c?.disconnect()
         }
-        adHosts = hosts
-        adCss = css.toString()
     }
 
     private fun refreshLists(force: Boolean) {
@@ -228,26 +238,19 @@ class MainActivity : AppCompatActivity() {
                 val f = File(filesDir, "list$i.txt")
                 val stale = !f.exists() || System.currentTimeMillis() - f.lastModified() > 3L * 24 * 3600 * 1000
                 if (!force && !stale) continue
-                try {
-                    val c = URL(LISTS[i]).openConnection() as HttpURLConnection
-                    c.connectTimeout = 15000
-                    c.readTimeout = 30000
-                    c.instanceFollowRedirects = true
-                    if (c.responseCode == 200) {
-                        val tmp = File(filesDir, "list$i.tmp")
-                        c.inputStream.use { inp -> tmp.outputStream().use { out -> inp.copyTo(out) } }
-                        if (tmp.length() > 1000) {
-                            tmp.copyTo(f, overwrite = true)
-                            downloaded = true
-                        }
-                        tmp.delete()
-                    }
-                    c.disconnect()
-                } catch (e: Exception) { }
+                val kind = if (i <= 1) FilterEngine.KIND_DOMAIN else FilterEngine.KIND_ABP
+                // unduhan yang bukan daftar filter (halaman login Wi-Fi, error HTML) tidak boleh menimpa daftar yang bagus
+                val ok = downloadValidated(LISTS[i], f) { FilterEngine.countAccepted(it, kind) >= 50 }
+                if (ok) downloaded = true
+            }
+            // Public Suffix List jarang berubah; cukup tiap 14 hari dan baru dipakai pada peluncuran berikutnya
+            val psl = File(filesDir, "psl.dat")
+            if (force || !psl.exists() || System.currentTimeMillis() - psl.lastModified() > 14L * 24 * 3600 * 1000) {
+                downloadValidated(PSL_URL, psl) { PublicSuffix.isValidFile(it) }
             }
             if (downloaded) parseLists()
             if (force) runOnUiThread {
-                Toast.makeText(this, "Daftar iklan: " + adHosts.size + " domain", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "Daftar iklan: " + sharedRules.blockCount() + " domain", Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -260,7 +263,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun injectCss(v: WebView) {
-        val css = adCss + "\n" + userCss() + "\n" + BASE_CSS
+        // filter kosmetik daftar (opsional) hanya untuk host halaman ini; aturan buatan pengguna dan BASE_CSS selalu berlaku
+        val host = Uri.parse(v.url ?: "").host
+        val listCss = if (host != null && prefs.getBoolean("cosmetic", false)) sharedRules.cssFor(host) else ""
+        val css = listCss + "\n" + userCss() + "\n" + BASE_CSS
         val js = "(function(){if(document.getElementById('__adb'))return;var s=document.createElement('style');s.id='__adb';s.textContent=" +
             JSONObject.quote(css) + ";(document.head||document.documentElement).appendChild(s);})();"
         v.evaluateJavascript(js, null)
@@ -319,6 +325,9 @@ class MainActivity : AppCompatActivity() {
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Public Suffix List hasil unduhan (bila ada) dimuat sebelum ada keputusan "situs yang sama"
+        PublicSuffix.loadFromFile(File(filesDir, "psl.dat"))
+        configBase = baseDomain(Uri.parse(currentUrl).host)
         setContentView(R.layout.activity_main)
         goFullscreen()
 
@@ -371,7 +380,7 @@ class MainActivity : AppCompatActivity() {
                     return true
                 }
                 if (!req.isForMainFrame) return false
-                if (isAd(u.host)) return true
+                if (isAd(u.host) || (!req.hasGesture() && isPopupAd(u.host))) return true
                 // Utamakan HTTPS: situs yang disimpan memakai https tidak boleh turun ke http (dengan pengaman agar tidak berputar)
                 if (scheme == "http" && u.port == -1 && currentUrl.startsWith("https://") &&
                     baseDomain(u.host) == baseDomain(Uri.parse(currentUrl).host)) {
@@ -490,7 +499,7 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
 
             override fun shouldOverrideUrlLoading(v: WebView, req: WebResourceRequest): Boolean {
                 val u = req.url
-                if (baseDomain(u.host) == siteBase && !isAd(u.host)) {
+                if (baseDomain(u.host) == siteBase && !isPopupAd(u.host)) {
                     webView.loadUrl(u.toString())
                 } else {
                     Toast.makeText(this@MainActivity, "Popup diblokir", Toast.LENGTH_SHORT).show()
@@ -518,7 +527,7 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
             closePopup()
             return true
         }
-        override fun shouldOverrideUrlLoading(v: WebView, req: WebResourceRequest): Boolean = isAd(req.url.host)
+        override fun shouldOverrideUrlLoading(v: WebView, req: WebResourceRequest): Boolean = isPopupAd(req.url.host)
     }
     popup.webChromeClient = object : WebChromeClient() {
         override fun onCloseWindow(window: WebView?) { closePopup() }
@@ -794,6 +803,15 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
                     prefs.edit().putBoolean("preload", on).apply()
                     if (on) injectPreload(webView) else webView.evaluateJavascript("window.__preOff=1", null)
                     Toast.makeText(this, if (on) "Muat gambar awal aktif" else "Muat gambar awal mati", Toast.LENGTH_SHORT).show()
+                },
+                MenuAction("🧩", "Filter kosmetik: " + (if (prefs.getBoolean("cosmetic", false)) "ON" else "OFF")) {
+                    val on = !prefs.getBoolean("cosmetic", false)
+                    prefs.edit().putBoolean("cosmetic", on).apply()
+                    Toast.makeText(this, if (on) "Filter kosmetik aktif, memproses daftar..." else "Filter kosmetik mati", Toast.LENGTH_SHORT).show()
+                    thread {
+                        parseLists()
+                        runOnUiThread { if (!isDestroyed) webView.reload() }
+                    }
                 },
                 MenuAction("👆", "Ketuk tepi: " + (if (prefs.getBoolean("edge_on", true)) "ON" else "OFF")) {
                     val on = !prefs.getBoolean("edge_on", true)

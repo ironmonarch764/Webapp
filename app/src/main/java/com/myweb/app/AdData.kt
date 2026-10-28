@@ -23,6 +23,9 @@ val LISTS = listOf(
     "https://raw.githubusercontent.com/ABPindo/indonesianadblockrules/master/subscriptions/abpindo.txt"
 )
 
+// Public Suffix List (daftar sufiks publik) untuk mengenali domain terdaftar; diunduh berkala oleh aplikasi
+const val PSL_URL = "https://publicsuffix.org/list/public_suffix_list.dat"
+
 val BASE_CSS = """ins.adsbygoogle,[id^="google_ads"],[class*="adsbygoogle"],iframe[src*="doubleclick"],iframe[src*="googlesyndication"]{opacity:0!important;pointer-events:none!important}"""
 
 val PICKER_JS = """
