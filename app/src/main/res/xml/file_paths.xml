@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- hanya folder export di cache: tempat file diagnosa .txt dibuat sementara untuk dibagikan -->
+    <cache-path name="export" path="export/" />
+</paths>
