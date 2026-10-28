@@ -31,8 +31,9 @@ public final class FilterEngineSelfTest {
         else pass++;
     }
 
+    // aturan umum dinyalakan agar logika umum tetap teruji; perilaku bawaan (mati) diuji terpisah
     private static FilterEngine.Builder builder(boolean cosmetic) {
-        return new FilterEngine.Builder(null, cosmetic);
+        return new FilterEngine.Builder(null, cosmetic).genericCosmetic(true);
     }
 
     private static FilterEngine.Rules abp(boolean cosmetic, String... lines) {
@@ -57,6 +58,8 @@ public final class FilterEngineSelfTest {
         testExceptionsImportantPopup();
         testCosmetic();
         testSelectorSafety();
+        testGenericOffByDefaultAndPageBudget();
+        testListValidation();
         testRealisticSamples();
         testFuzz();
         testPerformance();
@@ -364,7 +367,7 @@ public final class FilterEngineSelfTest {
         FilterEngine.Builder cap = builder(true);
         for (int i = 0; i < FilterEngine.MAX_GENERIC + 50; i++) cap.addLine("##.g" + i, FilterEngine.KIND_ABP);
         FilterEngine.Rules cr = cap.build();
-        check("batas aturan umum", count(cr.cssFor("a.com"), "{display:none!important}") == FilterEngine.MAX_GENERIC);
+        check("batas aturan per halaman", count(cr.cssFor("a.com"), "{display:none!important}") == FilterEngine.MAX_PAGE_RULES);
         check("ringkasan mencatat terpotong", cr.summary().contains("terpotong=50"));
     }
 
@@ -397,10 +400,70 @@ public final class FilterEngineSelfTest {
         check("satu rule per baris", count(u.cssFor("a.com"), "\n") == 2);
     }
 
+    // ---------------- Regresi laporan: kosmetik ON membuat HP panas dan aplikasi keluar ----------------
+
+    private static void testGenericOffByDefaultAndPageBudget() {
+        // bawaan: aturan UMUM tidak dimuat sama sekali, aturan khusus domain tetap jalan
+        FilterEngine.Builder b = new FilterEngine.Builder(null, true);
+        int r1 = b.addLine("##.ad-banner", FilterEngine.KIND_ABP);
+        int r2 = b.addLine("###sponsor", FilterEngine.KIND_ABP);
+        int r3 = b.addLine("##a[href*=\"track\"]", FilterEngine.KIND_ABP);
+        int r4 = b.addLine("komiku.id##.iklan", FilterEngine.KIND_ABP);
+        eq("umum dilewati (1)", FilterEngine.R_UNSUPPORTED, r1);
+        eq("umum dilewati (2)", FilterEngine.R_UNSUPPORTED, r2);
+        eq("umum dilewati (3)", FilterEngine.R_UNSUPPORTED, r3);
+        eq("khusus domain tetap diterima", FilterEngine.R_COSMETIC, r4);
+        String css = b.build().cssFor("komiku.id");
+        check("CSS hanya aturan domain", css.equals(".iklan{display:none!important}\n"));
+        check("domain lain tidak kena apa-apa", b.build().cssFor("example.com").isEmpty());
+        // 10.000 aturan umum EasyList tidak menambah apa pun ke CSS halaman
+        FilterEngine.Builder big = new FilterEngine.Builder(null, true);
+        for (int i = 0; i < 10000; i++) big.addLine("##a[href*=\"x" + i + "\"]", FilterEngine.KIND_ABP);
+        eq("10.000 aturan umum -> CSS kosong", "", big.build().cssFor("komiku.id"));
+        // anggaran per halaman: satu situs dengan 5.000 aturan khusus tetap dipotong
+        FilterEngine.Builder many = new FilterEngine.Builder(null, true);
+        for (int i = 0; i < 5000; i++) many.addLine("situs.com##.slot" + i, FilterEngine.KIND_ABP);
+        String pc = many.build().cssFor("situs.com");
+        eq("anggaran aturan per halaman", FilterEngine.MAX_PAGE_RULES, count(pc, "{display:none!important}"));
+        check("anggaran karakter", pc.length() <= FilterEngine.MAX_CSS_CHARS);
+    }
+
+    // ---------------- Validasi unduhan ----------------
+
+    private static File tmp(String content) throws IOException {
+        File f = File.createTempFile("lst", ".txt", new File(System.getProperty("java.io.tmpdir")));
+        FileWriter w = new FileWriter(f);
+        w.write(content);
+        w.close();
+        return f;
+    }
+
+    private static void testListValidation() throws IOException {
+        StringBuilder hosts = new StringBuilder();
+        for (int i = 0; i < 80; i++) hosts.append("ads").append(i).append(".example.com\n");
+        File plain = tmp(hosts.toString());
+        check("daftar domain polos valid", FilterEngine.looksLikeList(plain, FilterEngine.KIND_DOMAIN));
+        // daftar gaya ABPindo: header + kebanyakan kosmetik/path, hanya 3 aturan domain murni
+        StringBuilder abpindo = new StringBuilder("[Adblock Plus 2.0]\n! Title: contoh\n||one.example.com^\n||two.example.com^\n||three.example.com^\n");
+        for (int i = 0; i < 100; i++) abpindo.append("situs").append(i).append(".id##.iklan").append(i).append("\n");
+        File abp = tmp(abpindo.toString());
+        check("daftar kebanyakan kosmetik tetap valid", FilterEngine.looksLikeList(abp, FilterEngine.KIND_ABP));
+        // yang HARUS ditolak
+        File html = tmp("<html><body>Login Wi-Fi</body></html>\n" + hosts);
+        check("HTML ditolak walau ada baris mirip domain", FilterEngine.countAccepted(html, FilterEngine.KIND_ABP) < FilterEngine.MIN_ACCEPTED
+            && !FilterEngine.looksLikeList(html, FilterEngine.KIND_ABP));
+        File htmlOnly = tmp("<!DOCTYPE html>\n<html><head><title>x</title></head><body>\n" + new String(new char[200]).replace("\0", "teks biasa\n") + "</body></html>");
+        check("halaman HTML panjang ditolak", !FilterEngine.looksLikeList(htmlOnly, FilterEngine.KIND_ABP) && !FilterEngine.looksLikeList(htmlOnly, FilterEngine.KIND_DOMAIN));
+        check("file kosong ditolak", !FilterEngine.looksLikeList(tmp(""), FilterEngine.KIND_ABP));
+        check("file pendek ditolak", !FilterEngine.looksLikeList(tmp("[Adblock Plus 2.0]\n! x\n||a.example.com^\n"), FilterEngine.KIND_ABP));
+        check("file tidak ada ditolak", !FilterEngine.looksLikeList(new File("/tidak/ada/file.txt"), FilterEngine.KIND_ABP));
+        plain.delete(); abp.delete(); html.delete(); htmlOnly.delete();
+    }
+
     // ---------------- Sampel realistis (format EasyList / AdGuard DNS / ABPindo) ----------------
 
     private static void testRealisticSamples() {
-        FilterEngine.Builder b = new FilterEngine.Builder(null, true);
+        FilterEngine.Builder b = new FilterEngine.Builder(null, true).genericCosmetic(true);
         String[] adguard = {
             "! Title: AdGuard DNS filter", "! Version: 1.0", "||0-0.fr^", "||ad.example-ads.com^$important",
             "||tracker.example-t.net^$third-party", "@@||cdn.good-site.com^$important", "/^ads?[0-9]+\\./$denyallow=a.com",
