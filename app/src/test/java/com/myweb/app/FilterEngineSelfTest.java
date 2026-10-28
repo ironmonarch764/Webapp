@@ -426,6 +426,21 @@ public final class FilterEngineSelfTest {
         String pc = many.build().cssFor("situs.com");
         eq("anggaran aturan per halaman", FilterEngine.MAX_PAGE_RULES, count(pc, "{display:none!important}"));
         check("anggaran karakter", pc.length() <= FilterEngine.MAX_CSS_CHARS);
+
+        // selector mahal (bagian kanan tanpa tag/class/id) pada aturan domain dilewati; yang berindeks tetap masuk
+        check("mahal: [class*=]", FilterEngine.costlySelector("[class*=\"ad\"]"));
+        check("mahal: setelah kombinator", FilterEngine.costlySelector("div > [id^=\"x\"]"));
+        check("mahal: :not saja", FilterEngine.costlySelector(".a :not(.b)"));
+        check("mahal: salah satu dari daftar koma", FilterEngine.costlySelector(".ok, [data-ad]"));
+        check("murah: class", !FilterEngine.costlySelector(".iklan"));
+        check("murah: id", !FilterEngine.costlySelector("#sponsor"));
+        check("murah: tag + atribut", !FilterEngine.costlySelector("a[href*=\"track\"]"));
+        check("murah: atribut di dalam konteks, bagian kanan class", !FilterEngine.costlySelector("[data-x] .banner"));
+        check("murah: spasi/koma di dalam kurung/kutip", !FilterEngine.costlySelector("div[title=\"a, b > c\"]"));
+        FilterEngine.Builder cs = new FilterEngine.Builder(null, true);
+        eq("domain + atribut murni ditolak", FilterEngine.R_UNSUPPORTED, cs.addLine("komiku.id##[class*=\"ad-\"]", FilterEngine.KIND_ABP));
+        eq("domain + class tetap diterima", FilterEngine.R_COSMETIC, cs.addLine("komiku.id##.iklan", FilterEngine.KIND_ABP));
+        eq("domain + tag[atribut] tetap diterima", FilterEngine.R_COSMETIC, cs.addLine("komiku.id##div[class^=\"adv-\"]", FilterEngine.KIND_ABP));
     }
 
     // ---------------- Validasi unduhan ----------------
