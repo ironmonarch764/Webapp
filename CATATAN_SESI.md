@@ -34,3 +34,13 @@ Belum diverifikasi dengan build/perangkat (lihat laporan sesi).
 - Cookie pihak ketiga tetap aktif (dibutuhkan login Google/popup).
 - usesCleartextTraffic tetap true (alamat situs bebas diisi, bisa http).
 - WebView.onPause()/onResume() belum dipanggil (butuh uji di HP).
+
+## Sesi 3 (ad blocker, parser, domain) - selesai
+Catatan: build.yml dan .gitignore hasil Sesi 2 ternyata belum terpasang di repo (file berawalan titik/alur unggah); versi Sesi 2 dipulihkan di sini dan ditambah langkah tes.
+Diubah:
+- FilterEngine.java (baru): parser daftar filter + evaluasi blokir + filter kosmetik; Java murni, diuji.
+- PublicSuffix.java (baru): domain terdaftar memakai algoritma Public Suffix List (tanpa dependensi); psl.dat diunduh berkala, ada daftar bawaan untuk offline.
+- FilterEngineSelfTest.java (baru, app/src/test): 275 pemeriksaan; dijalankan otomatis di build.yml sebelum build APK.
+- MainActivity.kt: parseLists/isAd/baseDomain memakai mesin baru; pengecualian @@; $popup hanya untuk popup/pengalihan; pihak pertama juga dikenali dari alamat tersimpan (configBase); unduhan divalidasi + rename atomik + batas 30 MB; log tanpa data sensitif; hasil parse dipakai bersama antar Activity; menu "Filter kosmetik: ON/OFF" (default OFF = perilaku sebelumnya).
+- AdData.kt: PSL_URL.
+Keterbatasan: lihat laporan sesi (tidak ada aturan bertipe/path/regex/procedural; kosmetik umum dibatasi 3000 aturan).
