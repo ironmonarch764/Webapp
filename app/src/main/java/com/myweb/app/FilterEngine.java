@@ -46,8 +46,8 @@ public final class FilterEngine {
     static final int MAX_SELECTOR = 250;
     static final int MAX_GENERIC = 3000;          // hanya berlaku bila aturan umum diaktifkan (genericCosmetic)
     static final int MAX_DOMAIN_RULES = 60000;
-    static final int MAX_PAGE_RULES = 500;        // batas aturan CSS yang disuntikkan ke SATU halaman
-    static final int MAX_CSS_CHARS = 60000;
+    static final int MAX_PAGE_RULES = 150;        // batas aturan CSS yang disuntikkan ke SATU halaman
+    static final int MAX_CSS_CHARS = 20000;
     static final int MIN_ACCEPTED = 50;
 
     private static final String[] BAD_SELECTOR = {
@@ -160,6 +160,45 @@ public final class FilterEngine {
             }
         }
         return quote == 0 && paren == 0 && bracket == 0;
+    }
+
+    /**
+     * Selector "mahal": bagian paling kanan (yang dicocokkan ke elemen) tidak punya tag/class/id, mis. [class*="ad"],
+     * *:not(x), :is(...). Browser tidak bisa mengindeksnya, jadi dicek ke SETIAP elemen pada setiap hitung ulang gaya
+     * (sumber panas yang sama dengan aturan umum yang sudah dimatikan). Daftar dengan koma dianggap mahal bila salah
+     * satu bagiannya mahal.
+     */
+    static boolean costlySelector(String sel) {
+        int n = sel.length();
+        int start = 0;
+        char quote = 0;
+        int paren = 0;
+        int bracket = 0;
+        for (int i = 0; i <= n; i++) {
+            char c = i < n ? sel.charAt(i) : ',';
+            if (quote != 0) {
+                if (c == '\\') { i++; continue; }
+                if (c == quote) quote = 0;
+                continue;
+            }
+            if (c == '\\') { i++; continue; }
+            if (c == '"' || c == '\'') { quote = c; continue; }
+            if (c == '(') { paren++; continue; }
+            if (c == ')') { paren--; continue; }
+            if (c == '[') { bracket++; continue; }
+            if (c == ']') { bracket--; continue; }
+            if (paren != 0 || bracket != 0) continue;
+            if (c == ' ' || c == '>' || c == '+' || c == '~') {
+                start = i + 1;
+            } else if (c == ',') {
+                if (start < i) {
+                    char f = sel.charAt(start);
+                    if (f == '[' || f == '*' || f == ':') return true;
+                }
+                start = i + 1;
+            }
+        }
+        return false;
     }
 
     private static boolean hasExtendedSeparator(String line) {
@@ -542,6 +581,7 @@ public final class FilterEngine {
                 generic.add(sel);
                 return R_COSMETIC;
             }
+            if (costlySelector(sel)) return R_UNSUPPORTED;                  // lihat costlySelector: beban CPU/panas
             if (domainRuleCount >= MAX_DOMAIN_RULES) { nDropped++; return R_UNSUPPORTED; }
             String[] ex = exc.toArray(new String[0]);
             for (int i = 0; i < inc.size(); i++) {

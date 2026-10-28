@@ -33,7 +33,9 @@ fun applyColorFilter(webView: WebView, prefs: SharedPreferences) {
     val w = prefs.getInt("cf_w", CF_DEFAULT)
 
     if (b == CF_DEFAULT && c == CF_DEFAULT && s == CF_DEFAULT && w == CF_DEFAULT) {
-        webView.setLayerType(View.LAYER_TYPE_HARDWARE, null)
+        // Tanpa filter: JANGAN pakai layer offscreen. Layer hardware memaksa seluruh WebView digambar ke tekstur ekstra
+        // lalu disalin lagi tiap frame (paling terasa saat scroll di refresh rate tinggi); NONE = jalur normal WebView.
+        webView.setLayerType(View.LAYER_TYPE_NONE, null)
         return
     }
 

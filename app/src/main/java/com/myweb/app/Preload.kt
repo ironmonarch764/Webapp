@@ -6,7 +6,7 @@ package com.myweb.app
 const val PRELOAD_JS = """
 (function(){
 if(window.__pre)return;window.__pre=1;
-var AHEAD=6,A=['data-src','data-lazy-src','data-original','data-lazy','data-echo'],done=new WeakSet(),origins={},timer=0;
+var AHEAD=4,A=['data-src','data-lazy-src','data-original','data-lazy','data-echo'],done=new WeakSet(),origins={},timer=0,first=0;
 function pc(u){try{var o=new URL(u,location.href).origin;if(o===location.origin||origins[o])return;origins[o]=1;var l=document.createElement('link');l.rel='preconnect';l.href=o;(document.head||document.documentElement).appendChild(l);}catch(e){}}
 function bump(img){
  if(done.has(img))return;done.add(img);
@@ -25,17 +25,40 @@ function bump(img){
   var s=img.currentSrc||img.getAttribute('src');if(s)pc(s);
  }catch(e){}
 }
-function run(){
- timer=0;if(window.__preOff)return;
- var im=document.images,n=im.length,vh=window.innerHeight||800,f=-1;
- for(var i=0;i<n;i++){if(im[i].getBoundingClientRect().bottom>-vh){f=i;break;}}
- if(f<0)return;
- for(var j=f;j<n&&j<f+AHEAD;j++)bump(im[j]);
+// gambar "layak" = tidak tersembunyi (display:none, mis. oleh filter kosmetik) dan belum jauh di atas layar
+function ok(img,vh){
+ var r=img.getBoundingClientRect();
+ if(r.width===0&&r.height===0&&img.offsetParent===null)return false;
+ return r.bottom>-vh;
 }
-function sched(){if(!timer)timer=setTimeout(run,150);}
+function run(){
+ timer=0;if(window.__preOff||document.hidden)return;
+ var im=document.images,n=im.length,vh=window.innerHeight||800;
+ if(!n)return;
+ // mulai dari posisi terakhir (bukan dari gambar pertama tiap kali): jumlah pembacaan layout ~ jarak scroll, bukan jumlah gambar
+ var i=first<n?first:n-1;
+ while(i>0&&ok(im[i-1],vh))i--;
+ while(i<n&&!ok(im[i],vh))i++;
+ first=i;if(i>=n)return;
+ for(var j=i,c=0;j<n&&c<AHEAD;j++){
+  if(j>i&&!ok(im[j],vh))continue;
+  bump(im[j]);c++;
+ }
+}
+function sched(){if(!timer)timer=setTimeout(run,300);}
 addEventListener('scroll',sched,{passive:true});
 addEventListener('resize',sched);
-try{new MutationObserver(sched).observe(document.documentElement,{childList:true,subtree:true});}catch(e){}
+document.addEventListener('visibilitychange',sched);
+// hanya bereaksi bila ada <img> baru; iklan/penghitung yang terus mengubah DOM tidak lagi memicu hitung ulang layout
+try{new MutationObserver(function(ms){
+ for(var a=0;a<ms.length;a++){
+  var ad=ms[a].addedNodes;
+  for(var b=0;b<ad.length;b++){
+   var nd=ad[b];
+   if(nd.nodeType===1&&(nd.nodeName==='IMG'||(nd.firstElementChild&&nd.querySelector('img')))){sched();return;}
+  }
+ }
+}).observe(document.documentElement,{childList:true,subtree:true});}catch(e){}
 run();setTimeout(run,600);setTimeout(run,1800);
 })();
 """

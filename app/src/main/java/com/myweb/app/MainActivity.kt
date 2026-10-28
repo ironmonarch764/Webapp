@@ -282,10 +282,13 @@ class MainActivity : AppCompatActivity() {
         return if (rules.isEmpty()) "" else rules + "\nhtml,body{overflow:auto!important;position:static!important}"
     }
 
-    private fun injectCss(v: WebView) {
+    private fun injectCss(v: WebView, logStats: Boolean = false) {
         // filter kosmetik daftar (opsional) hanya untuk host halaman ini; aturan buatan pengguna dan BASE_CSS selalu berlaku
         val host = Uri.parse(v.url ?: "").host
-        val listCss = if (host != null && prefs.getBoolean("cosmetic", false)) sharedRules.cssFor(host) else ""
+        val cosmeticOn = prefs.getBoolean("cosmetic", false)
+        val listCss = if (host != null && cosmeticOn) sharedRules.cssFor(host) else ""
+        // jumlah aturan yang disuntikkan ke halaman ini (tanpa host) supaya beban kosmetik per halaman bisa dinilai dari log
+        if (logStats && cosmeticOn) logEvent(this, "kosmetik halaman: " + listCss.count { it == '\n' } + " aturan, " + listCss.length / 1024 + " KB")
         val css = listCss + "\n" + userCss() + "\n" + BASE_CSS
         val js = "(function(){if(document.getElementById('__adb'))return;var s=document.createElement('style');s.id='__adb';s.textContent=" +
             JSONObject.quote(css) + ";(document.head||document.documentElement).appendChild(s);})();"
@@ -462,7 +465,7 @@ class MainActivity : AppCompatActivity() {
                         firstLoad = false
                     }
                 }
-                injectCss(v)
+                injectCss(v, true)
                 injectPreload(v)
                 // efek gambar (haluskan/ketajaman) tersimpan di pengaturan tapi hilang tiap pindah halaman
                 if (prefs.getInt("fx_sm", 0) > 0 || prefs.getInt("fx_sh", 0) > 0) applyImageFx(v, prefs)
