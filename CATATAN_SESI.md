@@ -44,3 +44,16 @@ Diubah:
 - MainActivity.kt: parseLists/isAd/baseDomain memakai mesin baru; pengecualian @@; $popup hanya untuk popup/pengalihan; pihak pertama juga dikenali dari alamat tersimpan (configBase); unduhan divalidasi + rename atomik + batas 30 MB; log tanpa data sensitif; hasil parse dipakai bersama antar Activity; menu "Filter kosmetik: ON/OFF" (default OFF = perilaku sebelumnya).
 - AdData.kt: PSL_URL.
 Keterbatasan: lihat laporan sesi (tidak ada aturan bertipe/path/regex/procedural; kosmetik umum dibatasi 3000 aturan).
+
+## Perbaikan setelah Sesi 3 (laporan: kosmetik ON bikin HP panas dan aplikasi keluar sendiri)
+- Penyebab 1: aturan kosmetik UMUM (hingga 3000 selector atribut) dievaluasi ke setiap elemen halaman -> CPU/memori renderer. Kini aturan umum mati (hanya aturan khusus domain, maks 500 aturan / 60 KB per halaman).
+- Penyebab 2: pada Sesi 2 saya menutup aplikasi (finish) setelah 3 kali renderer mati beruntun. Kini membuka halaman aman (error.html) dan aplikasi tetap hidup.
+- Validasi unduhan daftar diperbaiki (looksLikeList): daftar bergaya ABPindo tidak lagi ditolak terus (yang membuatnya diunduh ulang tiap peluncuran).
+- Baru: menu "Info diagnosa" (RAM, penyebab proses berhenti menurut sistem, renderer mati terakhir, crash terakhir) + Diag.kt.
+- BELUM TERBUKTI: penyebab app masih keluar saat kosmetik OFF. Minta tangkapan layar "Info diagnosa" setelah kejadian.
+
+## Log aplikasi dan spanduk merah (permintaan pengguna)
+- Spanduk merah (ketuk = buka log) muncul bila: renderer WebView mati, aplikasi sebelumnya crash (error tercatat), atau sistem menghentikan proses saat masih di layar (memori habis/crash/ANR; API 30+). Aplikasi tidak lagi menutup diri.
+- Log (applog.txt, maks 64 KB, lokal): mulai/tutup aplikasi, RAM, halaman selesai (+RAM), onTrimMemory (10/15/>=60), renderer mati, crash (nama exception + 6 baris stack), gagal muat halaman (kode saja), TLS ditolak (kode saja), unduhan daftar (berhasil/gagal/tidak valid), filter dimuat (jumlah aturan), kosmetik ON/OFF, penyebab proses sebelumnya berhenti.
+- TIDAK dicatat: alamat situs, host, cookie, isi halaman.
+- Lihat: menu > Info diagnosa > Lihat log (Salin / Hapus), atau ketuk spanduk merah.
