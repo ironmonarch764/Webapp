@@ -6,3 +6,7 @@ local.properties
 *.iml
 *.apk
 .DS_Store
+# jangan pernah commit kunci signing
+*.jks
+*.keystore
+keystore.properties
