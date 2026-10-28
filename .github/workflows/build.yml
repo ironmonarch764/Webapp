@@ -2,26 +2,50 @@ name: Build APK
 on:
   push:
   workflow_dispatch:
+permissions:
+  contents: read
 jobs:
   build:
     runs-on: ubuntu-latest
-    env:
-      KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
-      KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-      KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-      KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: 17 }
       - uses: gradle/actions/setup-gradle@v3
         with: { gradle-version: 8.7 }
-      # Opsional: kalau file keystore disimpan sebagai secret KEYSTORE_BASE64, pulihkan di sini
+      - name: Filter engine tests
+        run: |
+          mkdir -p /tmp/ft
+          javac -d /tmp/ft app/src/main/java/com/myweb/app/PublicSuffix.java app/src/main/java/com/myweb/app/FilterEngine.java app/src/test/java/com/myweb/app/FilterEngineSelfTest.java
+          java -cp /tmp/ft com.myweb.app.FilterEngineSelfTest
+      # Secret hanya diberikan ke langkah yang membutuhkannya (bukan ke seluruh job / action pihak ketiga)
+      - name: Check signing secrets
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          missing=""
+          for v in KEYSTORE_BASE64 KEYSTORE_PASSWORD KEY_ALIAS KEY_PASSWORD; do
+            if [ -z "${!v}" ]; then
+              echo "::error::Secret $v belum diisi (Settings > Secrets and variables > Actions)"
+              missing=1
+            fi
+          done
+          if [ -n "$missing" ]; then exit 1; fi
       - name: Restore keystore
-        if: env.KEYSTORE_BASE64 != ''
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
         run: echo "$KEYSTORE_BASE64" | base64 -d > app/webapp.jks
-      - run: gradle assembleRelease
+      - name: Build release APK
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: gradle assembleRelease
       - uses: actions/upload-artifact@v4
         with:
           name: WebApp-apk
           path: app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
