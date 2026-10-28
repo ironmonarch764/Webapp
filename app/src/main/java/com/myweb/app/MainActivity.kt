@@ -133,18 +133,37 @@ class MainActivity : AppCompatActivity() {
 
     // Proses render WebView mati (biasanya kehabisan memori). WebView ini tidak bisa dipakai lagi:
     // buat ulang Activity dan lanjutkan dari halaman terakhir yang tersimpan. Tanpa penanganan ini aplikasi ikut mati.
-    private fun handleRenderGone() {
+    private fun handleRenderGone(crashed: Boolean?, priority: Int) {
         if (webViewDead) return
         webViewDead = true
         renderGoneCount++
-        if (renderGoneCount >= 3) {
-            Toast.makeText(this, "Halaman terus berhenti karena memori habis. Aplikasi ditutup.", Toast.LENGTH_LONG).show()
-            finish()
+        val safe = renderGoneCount >= 3
+        // spanduk merah ditampilkan oleh instance Activity berikutnya (yang ini sedang dibuat ulang)
+        val banner = if (safe) "Halaman terus berhenti (memori habis). Dibuka halaman aman. Ketuk untuk melihat log."
+            else "Halaman berhenti (memori habis), dimuat ulang. Ketuk untuk melihat log."
+        prefs.edit()
+            .putString("diag_render", "crash=" + crashed + " prioritas=" + priority + " beruntun=" + renderGoneCount +
+                " kosmetik=" + prefs.getBoolean("cosmetic", false))
+            .putLong("diag_render_at", System.currentTimeMillis())
+            .putString("banner_pending", banner)
+            .apply()
+        logEvent(this, "RENDERER MATI crash=" + crashed + " prioritas=" + priority + " beruntun=" + renderGoneCount +
+            " " + ramSnapshot(this))
+        if (safe) {
+            // jangan menutup aplikasi: mulai ulang di halaman aman supaya pengguna bisa mengubah pengaturan
+            renderGoneCount = 0
+            prefs.edit().putBoolean("safe_once", true).apply()
+            logEvent(this, "masuk halaman aman setelah 3 kali renderer mati")
+            recreate()
             return
         }
         if (renderGoneCount == 2) prefs.edit().remove("last_page").remove("last_scroll").apply()
-        Toast.makeText(this, "Halaman berhenti (memori habis). Memuat ulang...", Toast.LENGTH_SHORT).show()
         recreate()
+    }
+
+    private fun note(msg: String) {
+        Log.w("AdBlock", msg)
+        logEvent(this, msg)
     }
 
     private fun baseDomain(host: String?): String = PublicSuffix.registrableDomain(host)
@@ -180,12 +199,12 @@ class MainActivity : AppCompatActivity() {
             try {
                 FilterEngine.addFile(b, f, kind)
             } catch (e: Exception) {
-                Log.w("AdBlock", "daftar #" + i + " tidak terbaca penuh: " + e.javaClass.simpleName)
+                note("daftar #" + i + " tidak terbaca penuh: " + e.javaClass.simpleName)
             }
         }
         sharedRules = b.build()
         sharedSig = sig
-        Log.i("AdBlock", sharedRules.summary())
+        note("filter dimuat: " + sharedRules.summary())
     }
 
     // Unduh ke file sementara, validasi isinya, baru ganti file lama (rename). Gagal/tidak valid: file lama tetap dipakai.
@@ -199,7 +218,7 @@ class MainActivity : AppCompatActivity() {
             conn.readTimeout = 30000
             conn.instanceFollowRedirects = true
             if (conn.responseCode != 200) {
-                Log.w("AdBlock", "unduh gagal: HTTP " + conn.responseCode)
+                note("unduh gagal: HTTP " + conn.responseCode)
                 return false
             }
             conn.inputStream.use { inp ->
@@ -216,13 +235,14 @@ class MainActivity : AppCompatActivity() {
                 }
             }
             if (!valid(tmp)) {
-                Log.w("AdBlock", "isi unduhan bukan daftar yang valid; salinan lama dipertahankan")
+                note("isi unduhan bukan daftar yang valid; salinan lama dipertahankan (" + dest.name + ")")
                 return false
             }
             if (!tmp.renameTo(dest)) tmp.copyTo(dest, overwrite = true)
+            note("diperbarui: " + dest.name + " " + dest.length() / 1024 + " KB")
             return true
         } catch (e: Exception) {
-            Log.w("AdBlock", "unduh gagal: " + e.javaClass.simpleName)
+            note("unduh gagal: " + e.javaClass.simpleName)
             return false
         } finally {
             tmp.delete()
@@ -240,7 +260,7 @@ class MainActivity : AppCompatActivity() {
                 if (!force && !stale) continue
                 val kind = if (i <= 1) FilterEngine.KIND_DOMAIN else FilterEngine.KIND_ABP
                 // unduhan yang bukan daftar filter (halaman login Wi-Fi, error HTML) tidak boleh menimpa daftar yang bagus
-                val ok = downloadValidated(LISTS[i], f) { FilterEngine.countAccepted(it, kind) >= 50 }
+                val ok = downloadValidated(LISTS[i], f) { FilterEngine.looksLikeList(it, kind) }
                 if (ok) downloaded = true
             }
             // Public Suffix List jarang berubah; cukup tiap 14 hari dan baru dipakai pada peluncuran berikutnya
@@ -325,11 +345,22 @@ class MainActivity : AppCompatActivity() {
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        installCrashRecorder(applicationContext)
+        logEvent(this, "mulai (android " + Build.VERSION.SDK_INT + ", " + (if (savedInstanceState != null) "dibuat ulang" else "baru") +
+            ", kosmetik " + (if (prefs.getBoolean("cosmetic", false)) "ON" else "OFF") + ") " + ramSnapshot(this))
         // Public Suffix List hasil unduhan (bila ada) dimuat sebelum ada keputusan "situs yang sama"
         PublicSuffix.loadFromFile(File(filesDir, "psl.dat"))
         configBase = baseDomain(Uri.parse(currentUrl).host)
         setContentView(R.layout.activity_main)
         goFullscreen()
+
+        window.decorView.post {
+            val prevExit = checkPreviousExit(this, prefs)
+            val pending = prefs.getString("banner_pending", null)
+            if (pending != null) prefs.edit().remove("banner_pending").apply()
+            val msg = if (prevExit != null) "Aplikasi sebelumnya berhenti: " + prevExit + ". Ketuk untuk melihat log." else pending
+            if (msg != null) showRedBanner(this, msg) { showLogDialog(this) }
+        }
 
         val root = findViewById<View>(android.R.id.content)
         ViewCompat.setOnApplyWindowInsetsListener(root) { v, insets ->
@@ -418,6 +449,7 @@ class MainActivity : AppCompatActivity() {
             override fun onPageFinished(v: WebView, url: String?) {
                 if (url == null || url.startsWith("file:")) return
                 renderGoneCount = 0
+                logEvent(this@MainActivity, "halaman selesai " + ramSnapshot(this@MainActivity))
                 if (url.startsWith("http://")) {
                     val hh = Uri.parse(url).host ?: ""
                     if (hh.isNotEmpty() && warnedHttp.add(hh))
@@ -443,7 +475,10 @@ class MainActivity : AppCompatActivity() {
 
             override fun onReceivedError(v: WebView, req: WebResourceRequest, err: WebResourceError) {
                 // jangan memuat ulang halaman error bila halaman error itu sendiri yang gagal (cegah perulangan)
-                if (req.isForMainFrame && !req.url.toString().startsWith("file:")) v.loadUrl("file:///android_asset/error.html")
+                if (req.isForMainFrame && !req.url.toString().startsWith("file:")) {
+                    logEvent(this@MainActivity, "gagal memuat halaman: kode " + err.errorCode + " " + err.description)
+                    v.loadUrl("file:///android_asset/error.html")
+                }
             }
 
             // Kesalahan sertifikat TLS: selalu dibatalkan (tidak pernah proceed), pengguna diberi tahu
@@ -452,13 +487,14 @@ class MainActivity : AppCompatActivity() {
                 val now = System.currentTimeMillis()
                 if (now - lastSslToast > 3000) {
                     lastSslToast = now
+                    logEvent(this@MainActivity, "sertifikat TLS ditolak (kode " + (error?.primaryError ?: -1) + ")")
                     Toast.makeText(this@MainActivity, "Sertifikat situs tidak valid, koneksi dibatalkan", Toast.LENGTH_LONG).show()
                 }
             }
 
             @android.annotation.TargetApi(Build.VERSION_CODES.O)
             override fun onRenderProcessGone(view: WebView?, detail: RenderProcessGoneDetail?): Boolean {
-                handleRenderGone()
+                handleRenderGone(detail?.didCrash(), detail?.rendererPriorityAtExit() ?: -1)
                 return true
             }
         }
@@ -584,6 +620,11 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
         refreshLists(false)
 
         applyDns {
+            if (prefs.getBoolean("safe_once", false)) {
+                prefs.edit().remove("safe_once").apply()
+                webView.loadUrl("file:///android_asset/error.html")
+                return@applyDns
+            }
             var restored = false
             if (savedInstanceState != null) {
                 firstLoad = true
@@ -595,7 +636,16 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
         }
     }
 
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        // 10/15 = memori menipis saat aplikasi di layar; >= 60 = proses kandidat dibuang sistem
+        if (level == 10 || level == 15 || level >= 60) {
+            logEvent(this, "memori sistem menipis (onTrimMemory=" + level + ") " + ramSnapshot(this))
+        }
+    }
+
     override fun onDestroy() {
+        logEvent(this, "ditutup (finishing=" + isFinishing + ")")
         closePopup()
         fabCtl?.release()
         dismissMenuSheet()
@@ -808,11 +858,13 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
                     val on = !prefs.getBoolean("cosmetic", false)
                     prefs.edit().putBoolean("cosmetic", on).apply()
                     Toast.makeText(this, if (on) "Filter kosmetik aktif, memproses daftar..." else "Filter kosmetik mati", Toast.LENGTH_SHORT).show()
+                    logEvent(this, "filter kosmetik " + (if (on) "ON" else "OFF"))
                     thread {
                         parseLists()
                         runOnUiThread { if (!isDestroyed) webView.reload() }
                     }
                 },
+                MenuAction("🩺", "Info diagnosa") { showDiagDialog(this, prefs, sharedRules.summary()) },
                 MenuAction("👆", "Ketuk tepi: " + (if (prefs.getBoolean("edge_on", true)) "ON" else "OFF")) {
                     val on = !prefs.getBoolean("edge_on", true)
                     prefs.edit().putBoolean("edge_on", on).apply()
