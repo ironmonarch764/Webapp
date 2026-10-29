@@ -18,6 +18,11 @@ jobs:
           mkdir -p /tmp/ft
           javac -d /tmp/ft app/src/main/java/com/myweb/app/PublicSuffix.java app/src/main/java/com/myweb/app/FilterEngine.java app/src/test/java/com/myweb/app/FilterEngineSelfTest.java
           java -cp /tmp/ft com.myweb.app.FilterEngineSelfTest
+      - name: Reading position and auto-scroll tests
+        run: |
+          mkdir -p /tmp/rt
+          javac -d /tmp/rt app/src/main/java/com/myweb/app/AutoScrollMath.java app/src/main/java/com/myweb/app/ReadingPos.java app/src/test/java/com/myweb/app/ReadingSelfTest.java
+          java -cp /tmp/rt com.myweb.app.ReadingSelfTest
       # Secret hanya diberikan ke langkah yang membutuhkannya (bukan ke seluruh job / action pihak ketiga)
       - name: Check signing secrets
         env:
