@@ -57,3 +57,19 @@ Keterbatasan: lihat laporan sesi (tidak ada aturan bertipe/path/regex/procedural
 - Log (applog.txt, maks 64 KB, lokal): mulai/tutup aplikasi, RAM, halaman selesai (+RAM), onTrimMemory (10/15/>=60), renderer mati, crash (nama exception + 6 baris stack), gagal muat halaman (kode saja), TLS ditolak (kode saja), unduhan daftar (berhasil/gagal/tidak valid), filter dimuat (jumlah aturan), kosmetik ON/OFF, penyebab proses sebelumnya berhenti.
 - TIDAK dicatat: alamat situs, host, cookie, isi halaman.
 - Lihat: menu > Info diagnosa > Lihat log (Salin / Hapus), atau ketuk spanduk merah.
+
+## Perbaikan panas (kosmetik ON + muat gambar awal)
+- Preload.kt: skrip tidak lagi membaca layout dari gambar pertama tiap 150 ms (mulai dari posisi terakhir), MutationObserver hanya bereaksi bila ada <img> baru (iklan/penghitung yang terus mengubah DOM tidak memicu hitung ulang), berhenti saat halaman tersembunyi, dan gambar display:none (mis. disembunyikan filter kosmetik) dilewati.
+- FilterEngine.java: aturan kosmetik per-domain yang bagian kanannya hanya atribut/*/pseudo ([class*="ad"], :not(...)) dibuang (costlySelector) karena dicek ke setiap elemen. Uji ditambahkan (303 pemeriksaan lulus).
+- MainActivity.kt: log "kosmetik halaman: N aturan, K KB" per halaman (tanpa host) untuk menilai beban.
+- BELUM TERBUKTI di perangkat: log tidak merekam CPU renderer. Bandingkan rasa hangat setelah update; bila masih hangat, kirim log yang memuat baris "kosmetik halaman".
+
+## Sesi 4 (preload, auto-scroll, posisi membaca) - selesai
+Diubah:
+- Preload.kt: PRELOAD_JS ditulis ulang (status per gambar: sedang diunduh / gagal ke-n; maks 2 unduhan bersamaan; gagal diulang maks 2x dengan jeda; src situs yang sedang dimuat tidak ditimpa; placeholder data:/1px diganti; <picture>; AHEAD turun di 2G/3G/hemat data/RAM kecil; preconnect maks 4 origin; berhenti saat halaman tersembunyi). Baru: RESTORE_JS (pemulihan posisi terbatas waktu, berhenti saat disentuh) dan SAVE_POS_JS.
+- AutoScrollMath.java (baru, Java murni, diuji) + AutoScroll.kt: kecepatan berbasis waktu; dt maks 0.1 dtk (sebelumnya 0.05); di dasar tunggu 2 dtk, sampai 8 dtk bila gambar di ujung masih dimuat; berhenti bila WebView lepas dari layar.
+- ReadingPos.java (baru, diuji): sameDocument() dan clampY().
+- MainActivity.kt: posisi disimpan paling sering tiap 2 dtk saat scroll (bukan hanya onPause); tidak menyimpan posisi sementara (halaman belum complete / pemulihan berjalan); pemulihan hanya untuk dokumen yang sama dengan yang disimpan (bukan halaman perantara), kedaluwarsa 20 dtk; autoScroller.stop() di onDestroy dan saat menu dibuka.
+- FabController.kt: parameter opsional onScroll.
+- Tes: ReadingSelfTest.java (75 pemeriksaan, ikut build.yml), app/src/test/js/reading-flow.test.js (36 pemeriksaan di Chromium, dijalankan manual dengan node + playwright).
+Belum diverifikasi: build Kotlin (tidak ada Android SDK di sesi ini) dan perilaku di perangkat nyata.
