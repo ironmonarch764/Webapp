@@ -70,6 +70,8 @@ class MainActivity : AppCompatActivity() {
     private var firstLoad = false
     private var pickerActive = false
     private var restoreY = 0
+    private var restoreUrl: String? = null
+    private var restoreAt = 0L
     @Volatile private var pickerToken: String? = null
     private var webViewDead = false
     private var lastSslToast = 0L
@@ -302,20 +304,39 @@ class MainActivity : AppCompatActivity() {
     saveReadingPosition()
     }
 
-    // Simpan halaman + posisi scroll terakhir supaya aplikasi dibuka lagi di tempat yang sama
+    // Simpan halaman + posisi scroll terakhir supaya aplikasi dibuka lagi di tempat yang sama.
+    // Dipanggil saat onPause dan, selama membaca, paling sering tiap 2 detik (scheduleSave) supaya posisi tetap ada
+    // walau proses dimatikan sistem / renderer mati tanpa sempat onPause.
     private fun saveReadingPosition() {
         if (webViewDead) return
+        // pemulihan menunggu halaman selesai (maks 20 detik): posisi 0 sementara jangan menimpa posisi tersimpan
+        if (restoreY > 0 && System.currentTimeMillis() - restoreAt < 20000) return
         val u = webView.url ?: return
         if (!u.startsWith("http://") && !u.startsWith("https://")) return
-        val e = prefs.edit()
-        if (prefs.getString("last_page", null) != u) e.putInt("last_scroll", 0)
-        e.putString("last_page", u).apply()
-        webView.evaluateJavascript(
-            "(function(){return Math.round(window.scrollY||document.documentElement.scrollTop||0);})()"
-        ) { r ->
+        // halaman berganti: alamat baru disimpan LANGSUNG dengan posisi 0 (posisi lama bukan milik halaman ini)
+        if (prefs.getString("last_page", null) != u) prefs.edit().putString("last_page", u).putInt("last_scroll", 0).apply()
+        webView.evaluateJavascript(SAVE_POS_JS) { r ->
+            // jawaban datang belakangan: abaikan bila halaman sudah berganti / WebView sudah mati
+            if (webViewDead || webView.url != u) return@evaluateJavascript
             val y = r?.trim('"')?.toIntOrNull() ?: return@evaluateJavascript
-            prefs.edit().putInt("last_scroll", y).apply()
+            // -1 = halaman belum selesai atau pemulihan posisi sedang berjalan: posisi sementara tidak boleh menimpa
+            if (y < 0) return@evaluateJavascript
+            prefs.edit().putString("last_page", u).putInt("last_scroll", ReadingPos.clampY(y)).apply()
         }
+    }
+
+    private val saveHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var savePending = false
+    private val saveRunnable = Runnable {
+        savePending = false
+        saveReadingPosition()
+    }
+
+    // Dipanggil tiap kali WebView bergeser: simpan paling sering sekali per 2 detik
+    private fun scheduleSave() {
+        if (savePending || webViewDead) return
+        savePending = true
+        saveHandler.postDelayed(saveRunnable, 2000)
     }
 
     // Buka halaman terakhir (kalau masih satu situs dengan alamat web yang dipilih), kalau tidak ke halaman awal
@@ -323,7 +344,9 @@ class MainActivity : AppCompatActivity() {
         val last = prefs.getString("last_page", null)
         if (!last.isNullOrBlank() &&
             baseDomain(Uri.parse(last).host) == baseDomain(Uri.parse(currentUrl).host)) {
-            restoreY = prefs.getInt("last_scroll", 0)
+            restoreY = ReadingPos.clampY(prefs.getInt("last_scroll", 0))
+            restoreUrl = last
+            restoreAt = System.currentTimeMillis()
             firstLoad = true
             webView.loadUrl(last)
         } else load()
@@ -336,13 +359,10 @@ class MainActivity : AppCompatActivity() {
         v.evaluateJavascript("window.__preOff=0;" + PRELOAD_JS, null)
     }
 
+    // Pemulihan dijalankan DI DALAM dokumen (RESTORE_JS): menunggu tinggi dokumen cukup, terbatas 12 detik, berhenti bila
+    // pengguna menyentuh/scroll, dan otomatis mati bila halaman berganti (timer milik dokumen, bukan milik aplikasi).
     private fun restoreScroll(v: WebView, y: Int) {
-        // gambar komik sering dimuat belakangan, jadi coba beberapa kali sampai halaman cukup panjang
-        for (d in longArrayOf(150, 700, 1500, 2800)) {
-            v.postDelayed({
-                v.evaluateJavascript("(function(){if(window.scrollY<$y-5)window.scrollTo(0,$y);})()", null)
-            }, d)
-        }
+        v.evaluateJavascript(RESTORE_JS.replace("__Y__", y.toString()).replace("__BUDGET__", "12000"), null)
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -378,7 +398,7 @@ class MainActivity : AppCompatActivity() {
         webView.setBackgroundColor(Color.BLACK)
         progress = findViewById(R.id.progress)
         findViewById<ImageButton>(R.id.menuBtn).setOnClickListener { showMenu() }
-        fabCtl = FabController(webView, findViewById<ImageButton>(R.id.menuBtn), { pickerActive }, { prefs.getBoolean("edge_on", true) }, { autoScroller.stop() })
+        fabCtl = FabController(webView, findViewById<ImageButton>(R.id.menuBtn), { pickerActive }, { prefs.getBoolean("edge_on", true) }, { autoScroller.stop() }, { scheduleSave() })
 
         webView.settings.apply {
             javaScriptEnabled = true
@@ -470,9 +490,13 @@ class MainActivity : AppCompatActivity() {
                 // efek gambar (haluskan/ketajaman) tersimpan di pengaturan tapi hilang tiap pindah halaman
                 if (prefs.getInt("fx_sm", 0) > 0 || prefs.getInt("fx_sh", 0) > 0) applyImageFx(v, prefs)
                 if (restoreY > 0) {
-                    val y = restoreY
-                    restoreY = 0
-                    restoreScroll(v, y)
+                    if (System.currentTimeMillis() - restoreAt > 20000) {
+                        restoreY = 0                                   // kedaluwarsa: halaman yang diharapkan tidak kunjung selesai
+                    } else if (ReadingPos.sameDocument(url, restoreUrl)) {
+                        val y = restoreY                               // hanya untuk halaman yang posisinya disimpan
+                        restoreY = 0
+                        restoreScroll(v, y)
+                    }                                                  // alamat lain (mis. halaman perantara): tunggu yang cocok
                 }
             }
 
@@ -649,6 +673,8 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
 
     override fun onDestroy() {
         logEvent(this, "ditutup (finishing=" + isFinishing + ")")
+        autoScroller.stop()                              // pastikan tidak ada callback frame yang tersisa
+        saveHandler.removeCallbacksAndMessages(null)
         closePopup()
         fabCtl?.release()
         dismissMenuSheet()
@@ -789,6 +815,7 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
     }
 
     private fun load() {
+        restoreY = 0   // pemuatan eksplisit (Awal / situs lain): jangan terapkan posisi lama
         if (currentUrl.isNotBlank()) {
             firstLoad = true
             webView.loadUrl(currentUrl)
@@ -832,6 +859,7 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
     }
 
     private fun showMenu() {
+        autoScroller.stop()   // halaman tidak boleh terus bergerak di belakang menu
         showMenuSheet(
             this,
             listOf(

@@ -15,8 +15,14 @@ import android.widget.SeekBar
 import android.widget.TextView
 import kotlin.math.pow
 
-// Auto-scroll halus: bergerak tiap frame layar (ikut 60/120/144 Hz), kecepatan dalam dp per detik.
-// Berhenti otomatis di dasar halaman (menunggu 2 detik kalau gambar masih dimuat).
+// Apakah ada gambar di ujung dokumen yang belum selesai dimuat (tanda konten di bawah masih datang)
+private const val IMAGES_PENDING_JS =
+    "(function(){var im=document.images,n=im.length,c=0;for(var i=Math.max(0,n-10);i<n;i++){if(!im[i].complete)c++;}return c>0;})()"
+
+// Auto-scroll halus: bergerak tiap frame layar, kecepatan dalam dp per detik berdasarkan WAKTU (AutoScrollMath),
+// jadi jarak per detik sama di 60/90/120/144 Hz.
+// Berhenti otomatis di dasar halaman: menunggu 2 detik (tinggi dokumen bisa bertambah), dan sampai 8 detik bila
+// halaman melaporkan gambar di ujung masih dimuat. Berhenti juga bila WebView sudah lepas dari layar (Activity ditutup).
 class AutoScroller(private val webView: WebView, prefs: SharedPreferences) {
 
     var running = false
@@ -26,9 +32,8 @@ class AutoScroller(private val webView: WebView, prefs: SharedPreferences) {
     var onStateChange: ((Boolean) -> Unit)? = null
 
     private var speedDp = 28f
-    private var lastNanos = 0L
-    private var remainder = 0f
-    private var stuckSince = 0L
+    private val math = AutoScrollMath()
+    private var imagesPending = false
 
     init {
         setSpeedFromProgress(prefs.getInt("as_speed", 30))
@@ -42,37 +47,34 @@ class AutoScroller(private val webView: WebView, prefs: SharedPreferences) {
     private val callback = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) {
             if (!running) return
-            if (lastNanos != 0L) {
-                // dt dibatasi agar tidak melompat jauh setelah layar sempat tersendat
-                val dt = ((frameTimeNanos - lastNanos) / 1_000_000_000f).coerceAtMost(0.05f)
-                remainder += speedDp * webView.resources.displayMetrics.density * dt
-                val move = remainder.toInt()
-                if (move > 0) {
-                    remainder -= move
-                    webView.scrollBy(0, move)
-                }
+            // WebView sudah dilepas/dihancurkan: berhenti, jangan terus memanggil callback pada view yang mati
+            if (!webView.isAttachedToWindow) {
+                stop()
+                return
             }
-            lastNanos = frameTimeNanos
+            val move = math.step(frameTimeNanos, speedDp * webView.resources.displayMetrics.density)
+            if (move > 0) webView.scrollBy(0, move)
 
-            if (webView.canScrollVertically(1)) {
-                stuckSince = 0L
-            } else {
-                if (stuckSince == 0L) stuckSince = frameTimeNanos
-                else if (frameTimeNanos - stuckSince > 2_000_000_000L) {
-                    stop()
-                    return
-                }
+            if (math.shouldStop(frameTimeNanos, webView.canScrollVertically(1), imagesPending)) {
+                stop()
+                return
             }
+            if (math.wantImageCheck(frameTimeNanos)) checkImages()
             Choreographer.getInstance().postFrameCallback(this)
+        }
+    }
+
+    private fun checkImages() {
+        webView.evaluateJavascript(IMAGES_PENDING_JS) { r ->
+            if (running) imagesPending = r?.trim() == "true"
         }
     }
 
     fun start() {
         if (running) return
         running = true
-        lastNanos = 0L
-        remainder = 0f
-        stuckSince = 0L
+        math.reset()
+        imagesPending = false
         Choreographer.getInstance().postFrameCallback(callback)
         onStateChange?.invoke(true)
     }

@@ -24,7 +24,8 @@ class FabController(
     private val fab: ImageButton,
     private val isBusy: () -> Boolean,
     private val edgeOn: () -> Boolean,
-    private val onTouchDown: () -> Unit
+    private val onTouchDown: () -> Unit,
+    private val onScroll: () -> Unit = {}
 ) {
     // ---- Pengaturan (ubah angkanya sesuai selera) ----
     private val COOLDOWN_MS = 700L      // jeda tombol menu, milidetik
@@ -115,6 +116,7 @@ class FabController(
         // Scroll ke arah mana pun = tutup tombol (hanya jika sedang disentuh/baru disentuh,
         // dan tidak sedang masa tombol ditampilkan karena bar ditarik)
         webView.setOnScrollChangeListener { _, _, scrollY, _, oldY ->
+            onScroll()
             val now = SystemClock.uptimeMillis()
             val recent = now - lastTouch < 1500
             if (shown && recent && now > revealUntil && abs(scrollY - oldY) > 12) setShown(false)

@@ -52,7 +52,8 @@ object DnsProxy {
     private fun acceptLoop(s: ServerSocket) {
         while (!s.isClosed) {
             val c = try { s.accept() } catch (e: Exception) { break }
-            pool.execute { handle(c) }
+            // Pengaman terakhir: exception apa pun di thread pool tidak boleh mematikan aplikasi
+            pool.execute { try { handle(c) } catch (t: Throwable) { closeQuiet(c) } }
         }
     }
 
@@ -103,9 +104,16 @@ object DnsProxy {
             client.soTimeout = 300000
             val r: Socket = remote ?: return
             r.soTimeout = 300000
+            // Aliran diambil DI SINI (di dalam try), bukan di dalam lambda pool: kalau r sudah ditutup (klien memutus
+            // koneksi lebih dulu, mis. saat WebView kembali dari latar belakang), getInputStream() melempar
+            // SocketException; di thread pool itu tidak tertangkap dan mematikan aplikasi.
+            val rin = r.getInputStream()
+            val rout = r.getOutputStream()
             handedOff = true
-            pool.execute { copy(r.getInputStream(), out, client, r) }
-            copy(inp, r.getOutputStream(), client, r)
+            pool.execute {
+                try { copy(rin, out, client, r) } catch (t: Throwable) { closeQuiet(client); closeQuiet(r) }
+            }
+            copy(inp, rout, client, r)
         } catch (e: Exception) {
             if (!answered && isConnect) {
                 try { client.getOutputStream().write("HTTP/1.1 502 Bad Gateway\r\n\r\n".toByteArray()) } catch (x: Exception) { }
