@@ -23,6 +23,11 @@ jobs:
           mkdir -p /tmp/rt
           javac -d /tmp/rt app/src/main/java/com/myweb/app/AutoScrollMath.java app/src/main/java/com/myweb/app/ReadingPos.java app/src/test/java/com/myweb/app/ReadingSelfTest.java
           java -cp /tmp/rt com.myweb.app.ReadingSelfTest
+      - name: DoH resolver tests
+        run: |
+          mkdir -p /tmp/dt
+          javac -d /tmp/dt app/src/main/java/com/myweb/app/DohResolver.java app/src/test/java/com/myweb/app/DohResolverSelfTest.java
+          java -cp /tmp/dt com.myweb.app.DohResolverSelfTest
       # Secret hanya diberikan ke langkah yang membutuhkannya (bukan ke seluruh job / action pihak ketiga)
       - name: Check signing secrets
         env:
