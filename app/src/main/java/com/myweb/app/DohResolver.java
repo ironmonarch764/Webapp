@@ -111,22 +111,22 @@ public final class DohResolver {
     private final AtomicInteger fallbackCount = new AtomicInteger();
     private final AtomicInteger failCount = new AtomicInteger();
 
-    private static final class Entry {
+    private static final class CacheEntry {
         final List<InetAddress> addrs;
         final long expires;
         final String err;
-        Entry(List<InetAddress> a, long e, String err) { this.addrs = a; this.expires = e; this.err = err; }
+        CacheEntry(List<InetAddress> a, long e, String err) { this.addrs = a; this.expires = e; this.err = err; }
         List<InetAddress> result() throws UnknownHostException {
             if (err != null) throw new UnknownHostException(err);
             return addrs;
         }
     }
 
-    private final Map<String, Entry> cache = Collections.synchronizedMap(
-        new LinkedHashMap<String, Entry>(64, 0.75f, true) {
-            @Override protected boolean removeEldestEntry(Map.Entry<String, Entry> e) { return size() > MAX_ENTRIES; }
+    private final Map<String, CacheEntry> cache = Collections.synchronizedMap(
+        new LinkedHashMap<String, CacheEntry>(64, 0.75f, true) {
+            @Override protected boolean removeEldestEntry(Map.Entry<String, CacheEntry> e) { return size() > MAX_ENTRIES; }
         });
-    private final Map<String, FutureTask<Entry>> inflight = new ConcurrentHashMap<>();
+    private final Map<String, FutureTask<CacheEntry>> inflight = new ConcurrentHashMap<>();
 
     DohResolver(String endpoint, Transport t, SystemDns s, ExecutorService exec, Listener l, LongSupplier clock) {
         this.endpoint = endpoint;
@@ -483,8 +483,8 @@ public final class DohResolver {
     // ---------- pencarian ----------
     private long now() { return clock.getAsLong(); }
 
-    private Entry cacheGet(String key) {
-        Entry e = cache.get(key);
+    private CacheEntry cacheGet(String key) {
+        CacheEntry e = cache.get(key);
         if (e == null) return null;
         if (e.expires > now()) return e;
         cache.remove(key);
@@ -493,7 +493,7 @@ public final class DohResolver {
 
     private void put(String key, List<InetAddress> addrs, String err, long ttlMs) {
         if (closed) return;
-        cache.put(key, new Entry(addrs, now() + ttlMs, err));
+        cache.put(key, new CacheEntry(addrs, now() + ttlMs, err));
     }
 
     private static long clampTtl(long ttlSec) {
@@ -515,11 +515,11 @@ public final class DohResolver {
         final String host = normalizeHost(h0);
         if (host == null) throw new UnknownHostException("nama host tidak valid");
         final String key = family + "|" + host;
-        Entry e = cacheGet(key);
+        CacheEntry e = cacheGet(key);
         if (e != null) return e.result();
-        FutureTask<Entry> mine = new FutureTask<>(() -> fetch(host, family));
-        FutureTask<Entry> prev = inflight.putIfAbsent(key, mine);
-        FutureTask<Entry> t = prev != null ? prev : mine;
+        FutureTask<CacheEntry> mine = new FutureTask<>(() -> fetch(host, family));
+        FutureTask<CacheEntry> prev = inflight.putIfAbsent(key, mine);
+        FutureTask<CacheEntry> t = prev != null ? prev : mine;
         if (prev == null) {
             try { mine.run(); } finally { inflight.remove(key, mine); }
         }
@@ -535,7 +535,7 @@ public final class DohResolver {
         }
     }
 
-    private Entry fetch(String host, int family) {
+    private CacheEntry fetch(String host, int family) {
         String key = family + "|" + host;
         if (now() < skipUntil) return viaSystem(host, family, "DoH dilewati sementara");
         try {
@@ -543,33 +543,33 @@ public final class DohResolver {
             failStreak.set(0);
             okCount.incrementAndGet();
             if (p.status == 0 && !p.addrs.isEmpty()) {
-                Entry e = new Entry(p.addrs, now() + clampTtl(p.ttlSec), null);
+                CacheEntry e = new CacheEntry(p.addrs, now() + clampTtl(p.ttlSec), null);
                 if (!closed) cache.put(key, e);
                 return e;
             }
             if (p.status == 0) {
                 String msg = p.rawCount > 0 ? "diblokir oleh server DNS" : "tidak ada alamat IPv" + family;
                 put(key, null, msg, NEG_TTL_MS);
-                return new Entry(null, 0, msg);
+                return new CacheEntry(null, 0, msg);
             }
             if (p.status == 3) {
                 String msg = "domain tidak ditemukan";
                 put("4|" + host, null, msg, NEG_TTL_MS);
                 put("6|" + host, null, msg, NEG_TTL_MS);
-                return new Entry(null, 0, msg);
+                return new CacheEntry(null, 0, msg);
             }
             String msg = "server DNS menjawab kode " + p.status;
             put(key, null, msg, FAIL_TTL_MS);
-            return new Entry(null, 0, msg);
+            return new CacheEntry(null, 0, msg);
         } catch (DohFailure f) {
-            if (closed) return new Entry(null, 0, "proxy dihentikan");
+            if (closed) return new CacheEntry(null, 0, "proxy dihentikan");
             failCount.incrementAndGet();
             if (failStreak.incrementAndGet() >= BREAKER_FAILS) skipUntil = now() + BREAKER_MS;
             return viaSystem(host, family, f.getMessage());
         }
     }
 
-    private Entry viaSystem(String host, int family, String reason) {
+    private CacheEntry viaSystem(String host, int family, String reason) {
         fallbackCount.incrementAndGet();
         long t = now();
         lastFallbackAt = t;
@@ -577,7 +577,7 @@ public final class DohResolver {
             lastEventAt = t;
             try { if (listener != null) listener.onEvent("DoH gagal (" + reason + "), memakai DNS sistem"); } catch (RuntimeException ignored) { }
         }
-        if (closed) return new Entry(null, 0, "proxy dihentikan");
+        if (closed) return new CacheEntry(null, 0, "proxy dihentikan");
         Future<List<InetAddress>> f = exec.submit(() -> sys.lookup(host));
         try {
             List<InetAddress> all = f.get(sysTimeoutMs, TimeUnit.MILLISECONDS);
@@ -589,7 +589,7 @@ public final class DohResolver {
             put("4|" + host, v4.isEmpty() ? null : v4, v4.isEmpty() ? "tidak ada alamat IPv4" : null, FALLBACK_TTL_MS);
             put("6|" + host, v6.isEmpty() ? null : v6, v6.isEmpty() ? "tidak ada alamat IPv6" : null, FALLBACK_TTL_MS);
             List<InetAddress> mine = family == 4 ? v4 : v6;
-            return mine.isEmpty() ? new Entry(null, 0, "tidak ada alamat IPv" + family) : new Entry(mine, 0, null);
+            return mine.isEmpty() ? new CacheEntry(null, 0, "tidak ada alamat IPv" + family) : new CacheEntry(mine, 0, null);
         } catch (TimeoutException e) {
             f.cancel(true);
             return failBoth(host, "DNS sistem waktu habis");
@@ -598,14 +598,14 @@ public final class DohResolver {
         } catch (InterruptedException e) {
             f.cancel(true);
             Thread.currentThread().interrupt();
-            return new Entry(null, 0, "dibatalkan");
+            return new CacheEntry(null, 0, "dibatalkan");
         }
     }
 
-    private Entry failBoth(String host, String msg) {
+    private CacheEntry failBoth(String host, String msg) {
         put("4|" + host, null, msg, FAIL_TTL_MS);
         put("6|" + host, null, msg, FAIL_TTL_MS);
-        return new Entry(null, 0, msg);
+        return new CacheEntry(null, 0, msg);
     }
 
     // ---------- sambungan ----------

@@ -164,7 +164,7 @@ object DnsProxy {
             }
 
             client.soTimeout = 300000
-            val r: Socket = remote ?: return
+            val r: Socket = checkNotNull(remote)
             r.soTimeout = 300000
             // Aliran diambil DI SINI (di dalam try), bukan di dalam lambda pool: kalau r sudah ditutup (klien memutus
             // koneksi lebih dulu, mis. saat WebView kembali dari latar belakang), getInputStream() melempar
