@@ -1,22 +1,25 @@
 package com.myweb.app
 
-import org.json.JSONObject
 import java.io.BufferedInputStream
+import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
-import java.net.HttpURLConnection
 import java.net.InetAddress
-import java.net.InetSocketAddress
+import java.net.MalformedURLException
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.URL
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicLong
 
-// Proxy lokal kecil (127.0.0.1) yang dipakai WebView. Tugasnya hanya MENCARI ALAMAT IP lewat DNS-over-HTTPS
-// (Cloudflare / Google / alamat sendiri), lalu meneruskan data apa adanya. HTTPS tetap tersambung langsung
+// Proxy lokal kecil (127.0.0.1, port acak) yang dipakai WebView. Tugasnya hanya MENCARI ALAMAT IP lewat DNS-over-HTTPS
+// (Cloudflare / Google / alamat sendiri, format JSON), lalu meneruskan data apa adanya. HTTPS tetap tersambung langsung
 // dari WebView ke situs (terenkripsi ujung ke ujung), jadi login/cookie/Cloudflare tidak terganggu.
-// Kalau DoH gagal, otomatis memakai DNS bawaan HP.
+// Logika DNS (validasi, cache TTL, cadangan, pembatasan waktu) ada di DohResolver.java (diuji di JVM).
+// Aturan cadangan: HANYA kegagalan transport DoH (jaringan/TLS/waktu habis/HTTP error/isi bukan JSON DNS) yang beralih ke
+// DNS bawaan HP, dan itu diberitahukan. Jawaban DNS yang sah (NXDOMAIN, tanpa alamat, diblokir) dihormati tanpa cadangan.
 object DnsProxy {
 
     val PRESETS = mapOf(
@@ -25,42 +28,102 @@ object DnsProxy {
     )
 
     @Volatile private var server: ServerSocket? = null
-    @Volatile private var dohBase = ""
-    private val pool = Executors.newCachedThreadPool()
-    private class Entry(val addrs: List<InetAddress>, val expires: Long)
-    private val cache = ConcurrentHashMap<String, Entry>()
-    private const val TTL_MS = 5 * 60 * 1000L
+    @Volatile private var resolver: DohResolver? = null
+    @Volatile private var owner: Any? = null
+    @Volatile private var listener: ((String) -> Unit)? = null
+    private var endpoint = ""
+    private val pool: ExecutorService = Executors.newCachedThreadPool()
+    // Semua soket yang sedang terbuka (klien + tujuan): ditutup saat proxy dihentikan supaya tidak ada yang tertinggal
+    private val live: MutableSet<Socket> = java.util.Collections.newSetFromMap(ConcurrentHashMap<Socket, Boolean>())
+    private val served = AtomicLong()
 
+    /** null = alamat DoH valid; selain itu pesan untuk pengguna. */
+    fun validate(url: String): String? = DohResolver.validateEndpoint(url)
+
+    /** Uji server DoH (tanpa cache/cadangan). null = berfungsi; selain itu alasan singkat. Blokir: panggil dari thread latar. */
+    fun probe(doh: String): String? {
+        val err = DohResolver.validateEndpoint(doh)
+        if (err != null) return err
+        return try { DohResolver.create(doh, pool, null).probe() } catch (e: Exception) { "gagal menguji" }
+    }
+
+    fun stats(): String {
+        val r = resolver ?: return "Proxy DNS: tidak aktif"
+        return "Proxy DNS: aktif, sambungan dilayani=" + served.get() + ", " + r.stats()
+    }
+
+    /** Waktu (ms epoch) terakhir DNS sistem dipakai sebagai cadangan; 0 = belum / proxy tidak aktif. */
+    fun lastFallbackAt(): Long = resolver?.lastFallbackAt() ?: 0L
+
+    // Dipanggil dari UI thread. Melempar IllegalArgumentException (alamat tidak valid) atau IOException (port gagal dibuka);
+    // pemanggil harus menampilkan kegagalan itu dan TIDAK memasang proxy ke WebView.
     @Synchronized
-    fun start(doh: String): Int {
-        if (doh != dohBase) cache.clear()
-        dohBase = doh
-        server?.let { if (!it.isClosed) return it.localPort }
-        val s = ServerSocket(0, 64, InetAddress.getByName("127.0.0.1"))
-        server = s
-        pool.execute { acceptLoop(s) }
+    fun start(doh: String, who: Any, onEvent: (String) -> Unit): Int {
+        val err = DohResolver.validateEndpoint(doh)
+        if (err != null) throw IllegalArgumentException(err)
+        val existing = server
+        val s: ServerSocket
+        if (existing != null && !existing.isClosed) {
+            s = existing
+        } else {
+            s = ServerSocket(0, 64, InetAddress.getByName("127.0.0.1"))
+            server = s
+            pool.execute { acceptLoop(s) }
+        }
+        // konfigurasi DoH berubah -> resolver baru (cache lama ikut dibuang, permintaan lama dibatalkan)
+        if (resolver == null || endpoint != doh) {
+            val old = resolver
+            resolver = DohResolver.create(doh, pool) { m -> listener?.invoke(m) }
+            endpoint = doh
+            old?.close()
+        }
+        owner = who
+        listener = onEvent
         return s.localPort
     }
 
+    // Dipanggil Activity yang sedang dihancurkan: hanya menghentikan proxy bila Activity itu pemiliknya.
+    // (Activity lama yang baru dihancurkan setelah Activity baru memulai proxy tidak boleh mematikannya.)
     @Synchronized
-    fun stop() {
+    fun stop(who: Any) {
+        if (owner === who) shutdown()
+    }
+
+    // Pengguna memilih DNS sistem: hentikan proxy siapa pun pemiliknya.
+    @Synchronized
+    fun stopAll() {
+        shutdown()
+    }
+
+    private fun shutdown() {
         try { server?.close() } catch (e: Exception) { }
         server = null
-        cache.clear()
+        resolver?.close()
+        resolver = null
+        endpoint = ""
+        owner = null
+        listener = null
+        for (s in live.toList()) closeQuiet(s)
     }
 
     private fun acceptLoop(s: ServerSocket) {
         while (!s.isClosed) {
             val c = try { s.accept() } catch (e: Exception) { break }
+            live.add(c)
+            if (s.isClosed) { closeQuiet(c); break }
+            served.incrementAndGet()
             // Pengaman terakhir: exception apa pun di thread pool tidak boleh mematikan aplikasi
-            pool.execute { try { handle(c) } catch (t: Throwable) { closeQuiet(c) } }
+            try {
+                pool.execute { try { handle(c) } catch (t: Throwable) { closeQuiet(c) } }
+            } catch (e: Exception) {
+                closeQuiet(c)
+            }
         }
     }
 
     private fun handle(client: Socket) {
         var remote: Socket? = null
         var answered = false
-        var isConnect = false
         var handedOff = false
         try {
             client.soTimeout = 30000
@@ -74,9 +137,8 @@ object DnsProxy {
             val target = first[1]
 
             if (method.equals("CONNECT", true)) {
-                isConnect = true
                 val hp = hostPort(target, 443)
-                val rs = open(hp.first, hp.second)
+                val rs = open(hp.first, hp.second, client)
                 remote = rs
                 out.write("HTTP/1.1 200 Connection Established\r\n\r\n".toByteArray())
                 out.flush()
@@ -84,7 +146,7 @@ object DnsProxy {
             } else {
                 val u = URL(target)
                 val port = if (u.port > 0) u.port else 80
-                val rs = open(u.host, port)
+                val rs = open(u.host, port, client)
                 remote = rs
                 val path = if (u.file.isNullOrEmpty()) "/" else u.file
                 val sb = StringBuilder().append(method).append(' ').append(path).append(' ').append(first[2]).append("\r\n")
@@ -115,8 +177,13 @@ object DnsProxy {
             }
             copy(inp, rout, client, r)
         } catch (e: Exception) {
-            if (!answered && isConnect) {
-                try { client.getOutputStream().write("HTTP/1.1 502 Bad Gateway\r\n\r\n".toByteArray()) } catch (x: Exception) { }
+            // Kegagalan sebelum ada jawaban (DNS tidak ketemu, tidak bisa tersambung, URL rusak): beri tahu WebView dengan
+            // status HTTP yang jelas untuk CONNECT maupun HTTP biasa (dulu HTTP biasa hanya ditutup tanpa jawaban).
+            if (!answered) {
+                val status = if (e is MalformedURLException) "400 Bad Request" else "502 Bad Gateway"
+                try {
+                    client.getOutputStream().write(("HTTP/1.1 " + status + "\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").toByteArray())
+                } catch (x: Exception) { }
             }
             closeQuiet(client)
             closeQuiet(remote)
@@ -145,7 +212,9 @@ object DnsProxy {
     }
 
     private fun closeQuiet(s: Socket?) {
-        try { s?.close() } catch (e: Exception) { }
+        if (s == null) return
+        live.remove(s)
+        try { s.close() } catch (e: Exception) { }
     }
 
     private fun readHead(inp: InputStream): String? {
@@ -168,58 +237,15 @@ object DnsProxy {
         return if (i > 0) t.substring(0, i) to (t.substring(i + 1).toIntOrNull() ?: def) else t to def
     }
 
-    private fun open(host: String, port: Int): Socket {
-        var last: Exception? = null
-        for (a in resolve(host).take(4)) {
-            val s = Socket()
-            try {
-                s.connect(InetSocketAddress(a, port), 10000)
-                s.tcpNoDelay = true
-                return s
-            } catch (e: Exception) {
-                last = e
-                closeQuiet(s)
-            }
+    // Pencarian + sambungan: IPv4 dulu, IPv6 bila IPv4 tidak ada/gagal; batas 10 dtk per alamat, 20 dtk total.
+    private fun open(host: String, port: Int, client: Socket): Socket {
+        val r = resolver ?: throw IOException("proxy dihentikan")
+        val s = r.connect(host, port, 10000, 20000, java.util.function.BooleanSupplier { client.isClosed })
+        live.add(s)
+        if (r.isClosed) {   // proxy dihentikan saat sambungan sedang dibuat
+            closeQuiet(s)
+            throw IOException("proxy dihentikan")
         }
-        throw last ?: java.net.UnknownHostException(host)
-    }
-
-    private fun isLiteral(h: String) = h.contains(':') || h.matches(Regex("^[0-9.]+$"))
-
-    private fun resolve(host: String): List<InetAddress> {
-        if (isLiteral(host)) return listOf(InetAddress.getByName(host))
-        val now = System.currentTimeMillis()
-        cache[host]?.let { if (it.expires > now) return it.addrs }
-        var res: List<InetAddress> = emptyList()
-        try {
-            res = doh(host, "A")
-            if (res.isEmpty()) res = doh(host, "AAAA")
-        } catch (e: Exception) { }
-        if (res.isEmpty()) res = InetAddress.getAllByName(host).toList()   // cadangan: DNS bawaan HP
-        cache[host] = Entry(res, now + TTL_MS)
-        return res
-    }
-
-    private fun doh(host: String, type: String): List<InetAddress> {
-        val base = dohBase
-        val sep = if (base.contains('?')) "&" else "?"
-        val c = URL("$base${sep}name=$host&type=$type").openConnection() as HttpURLConnection
-        c.connectTimeout = 5000
-        c.readTimeout = 5000
-        c.setRequestProperty("Accept", "application/dns-json")
-        try {
-            if (c.responseCode != 200) return emptyList()
-            val body = c.inputStream.bufferedReader().use { it.readText() }
-            val ans = JSONObject(body).optJSONArray("Answer") ?: return emptyList()
-            val want = if (type == "A") 1 else 28
-            val out = ArrayList<InetAddress>()
-            for (i in 0 until ans.length()) {
-                val o = ans.getJSONObject(i)
-                if (o.optInt("type") == want) out.add(InetAddress.getByName(o.getString("data")))
-            }
-            return out
-        } finally {
-            c.disconnect()
-        }
+        return s
     }
 }

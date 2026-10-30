@@ -78,6 +78,8 @@ class MainActivity : AppCompatActivity() {
     private var lastUpgradeUrl = ""
     private var lastUpgradeAt = 0L
     private val warnedHttp = HashSet<String>()
+    private var failedUrl: String? = null     // halaman utama yang terakhir gagal dimuat (untuk "Coba lagi")
+    private var dnsState = ""                 // kosong = DNS terpilih benar-benar dipasang; selain itu alasan tidak aktif
 
     private val chooser = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
         fileCallback?.onReceiveValue(WebChromeClient.FileChooserParams.parseResult(r.resultCode, r.data))
@@ -86,7 +88,10 @@ class MainActivity : AppCompatActivity() {
 
     inner class Bridge {
         @JavascriptInterface
-        fun retry() { runOnUiThread { if (onErrorPage()) load() } }
+        fun retry() { runOnUiThread { if (onErrorPage()) retryFailed() } }
+
+        @JavascriptInterface
+        fun systemDns() { runOnUiThread { if (onErrorPage()) setDns("off") } }
 
         @JavascriptInterface
         fun changeUrl() { runOnUiThread { if (onErrorPage()) askUrl(true) } }
@@ -472,6 +477,7 @@ class MainActivity : AppCompatActivity() {
             override fun onPageFinished(v: WebView, url: String?) {
                 if (url == null || url.startsWith("file:")) return
                 renderGoneCount = 0
+                failedUrl = null
                 logEvent(this@MainActivity, "halaman selesai " + ramSnapshot(this@MainActivity))
                 if (url.startsWith("http://")) {
                     val hh = Uri.parse(url).host ?: ""
@@ -504,7 +510,10 @@ class MainActivity : AppCompatActivity() {
                 // jangan memuat ulang halaman error bila halaman error itu sendiri yang gagal (cegah perulangan)
                 if (req.isForMainFrame && !req.url.toString().startsWith("file:")) {
                     logEvent(this@MainActivity, "gagal memuat halaman: kode " + err.errorCode + " " + err.description)
-                    v.loadUrl("file:///android_asset/error.html")
+                    val u = req.url.toString()
+                    if (u.startsWith("http://") || u.startsWith("https://")) failedUrl = u
+                    // kode galat + penanda DNS kustom dikirim ke halaman error (hanya angka/flag, bukan alamat)
+                    v.loadUrl("file:///android_asset/error.html?c=" + err.errorCode + (if (dnsUrl() != null) "&d=1" else ""))
                 }
             }
 
@@ -681,47 +690,107 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
         webView.stopLoading()
         (webView.parent as? android.view.ViewGroup)?.removeView(webView)
         webView.destroy()
-        DnsProxy.stop()
+        DnsProxy.stop(this)   // hanya bila Activity ini pemilik proxy (Activity lama tidak boleh mematikan milik yang baru)
         super.onDestroy()
     }
 
     // ---------- DNS kustom (DNS-over-HTTPS lewat proxy lokal) ----------
+    private fun dnsMode(): String = prefs.getString("dns", "off") ?: "off"
+
+    // Alamat DoH untuk mode terpilih. null = DNS sistem, ATAU alamat kustom tersimpan tidak valid (dnsInvalid() membedakan).
     private fun dnsUrl(): String? {
-        val m = prefs.getString("dns", "off") ?: "off"
+        val m = dnsMode()
         return when (m) {
             "cloudflare", "google" -> DnsProxy.PRESETS[m]
-            "custom" -> prefs.getString("dns_custom", "")?.takeIf { it.startsWith("https://") }
+            "custom" -> prefs.getString("dns_custom", "")?.trim()?.takeIf { DnsProxy.validate(it) == null }
             else -> null
         }
     }
 
-    private fun dnsLabel(): String = when (prefs.getString("dns", "off")) {
-        "cloudflare" -> "Cloudflare"
-        "google" -> "Google"
-        "custom" -> "Kustom"
-        else -> "Sistem"
+    private fun dnsInvalid(): Boolean = dnsMode() == "custom" && dnsUrl() == null
+
+    private fun dnsLabel(): String {
+        val name = when (dnsMode()) {
+            "cloudflare" -> "Cloudflare"
+            "google" -> "Google"
+            "custom" -> "Kustom"
+            else -> "Sistem"
+        }
+        val fb = DnsProxy.lastFallbackAt()
+        val st = when {
+            dnsMode() == "off" -> ""
+            dnsState.isNotEmpty() -> " (" + dnsState + ")"
+            fb > 0 && System.currentTimeMillis() - fb < 120000 -> " (cadangan sistem aktif)"
+            else -> ""
+        }
+        return name + st
+    }
+
+    // Menghentikan proxy DNS dan melepas proxy dari WebView (DNS sistem).
+    private fun clearProxy(done: () -> Unit) {
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE)) {
+            DnsProxy.stopAll()
+            done()
+            return
+        }
+        try {
+            ProxyController.getInstance().clearProxyOverride(ContextCompat.getMainExecutor(this)) { DnsProxy.stopAll(); done() }
+        } catch (e: Exception) {
+            DnsProxy.stopAll()
+            done()
+        }
     }
 
     private fun applyDns(onReady: () -> Unit) {
         val url = dnsUrl()
         // callback bisa datang setelah Activity ditutup; jangan sentuh WebView/dialog saat itu
         val done: () -> Unit = { if (!isDestroyed) onReady() }
+        dnsState = ""
+        if (url == null) {
+            // DNS sistem dipilih, atau alamat kustom tersimpan tidak valid (jangan diam-diam: beri tahu)
+            if (dnsInvalid()) {
+                dnsState = "alamat tidak valid, memakai sistem"
+                Toast.makeText(this, "Alamat DoH kustom tidak valid, memakai DNS sistem", Toast.LENGTH_LONG).show()
+            }
+            clearProxy(done)
+            return
+        }
         if (!WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE)) {
-            if (url != null) Toast.makeText(this, "WebView di HP ini belum mendukung DNS kustom", Toast.LENGTH_LONG).show()
+            dnsState = "tidak aktif: WebView belum mendukung"
+            Toast.makeText(this, "WebView di HP ini belum mendukung DNS kustom, memakai DNS sistem", Toast.LENGTH_LONG).show()
             done()
             return
         }
-        val ex = ContextCompat.getMainExecutor(this)
         try {
-            if (url == null) {
-                ProxyController.getInstance().clearProxyOverride(ex) { DnsProxy.stop(); done() }
-            } else {
-                val port = DnsProxy.start(url)
-                val cfg = ProxyConfig.Builder().addProxyRule("127.0.0.1:$port").addDirect().build()
-                ProxyController.getInstance().setProxyOverride(cfg, ex) { done() }
+            val appCtx = applicationContext
+            val ui = android.os.Handler(android.os.Looper.getMainLooper())
+            // pemberitahuan cadangan DNS sistem datang dari thread proxy: catat (tanpa host) dan tampilkan di UI thread
+            val port = DnsProxy.start(url, this) { msg ->
+                logEvent(appCtx, msg)
+                ui.post { Toast.makeText(appCtx, msg, Toast.LENGTH_LONG).show() }
             }
+            val cfg = ProxyConfig.Builder().addProxyRule("127.0.0.1:$port").addDirect().build()
+            ProxyController.getInstance().setProxyOverride(cfg, ContextCompat.getMainExecutor(this)) { done() }
         } catch (e: Exception) {
-            done()
+            // proxy gagal dimulai (port/alamat) atau aturan ditolak: lepas override lama dan beri tahu
+            dnsState = "gagal dimulai, memakai sistem"
+            logEvent(this, "proxy DNS gagal dimulai: " + e.javaClass.simpleName)
+            Toast.makeText(this, "Proxy DNS gagal dimulai, memakai DNS sistem", Toast.LENGTH_LONG).show()
+            clearProxy(done)
+        }
+    }
+
+    // Uji server DoH terpilih di thread latar; kegagalan dilaporkan (aplikasi tetap jalan lewat cadangan sistem).
+    private fun testDns() {
+        val url = dnsUrl() ?: return
+        if (dnsState.isNotEmpty()) return
+        thread {
+            val err = DnsProxy.probe(url)
+            if (err != null) runOnUiThread {
+                if (!isDestroyed && dnsUrl() == url) {
+                    Toast.makeText(this, "Server DoH tidak berfungsi: " + err + ". DNS sistem dipakai sebagai cadangan.", Toast.LENGTH_LONG).show()
+                }
+            }
         }
     }
 
@@ -729,7 +798,8 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
         prefs.edit().putString("dns", mode).apply()
         applyDns {
             Toast.makeText(this, "DNS: " + dnsLabel(), Toast.LENGTH_SHORT).show()
-            if (onErrorPage()) load() else webView.reload()
+            if (onErrorPage()) retryFailed() else webView.reload()
+            testDns()
         }
     }
 
@@ -767,7 +837,8 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
         dlg.setOnShowListener {
             dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
                 val u = input.text.toString().trim()
-                if (!u.startsWith("https://") || u.length < 12) input.error = "Harus diawali https://"
+                val err = DnsProxy.validate(u)
+                if (err != null) input.error = err
                 else {
                     prefs.edit().putString("dns_custom", u).apply()
                     setDns("custom")
@@ -822,10 +893,17 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
         }
     }
 
+    // Coba lagi halaman yang gagal dimuat (bukan selalu halaman awal); tanpa catatan gagal: halaman awal
+    private fun retryFailed() {
+        val f = failedUrl
+        if (f != null && (f.startsWith("https://") || f.startsWith("http://"))) webView.loadUrl(f) else load()
+    }
+
     private fun normalize(input: String): String? {
         var s = input.trim()
-        if (s.isEmpty() || s.contains(" ")) return null
-        if (!s.startsWith("http://") && !s.startsWith("https://")) s = "https://$s"
+        if (s.isEmpty() || s.any { it.isWhitespace() || it.isISOControl() }) return null
+        if (!s.startsWith("http://", true) && !s.startsWith("https://", true)) s = "https://$s"
+        else s = s.substring(0, s.indexOf("://")).lowercase() + s.substring(s.indexOf("://"))   // skema huruf kecil
         val host = Uri.parse(s).host
         return if (host.isNullOrBlank() || !host.contains(".")) null else s
     }
@@ -863,7 +941,7 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
         showMenuSheet(
             this,
             listOf(
-                MenuAction("🔄", "Muat ulang") { webView.reload() },
+                MenuAction("🔄", "Muat ulang") { if (onErrorPage()) retryFailed() else webView.reload() },
                 MenuAction("🏠", "Awal") { load() },
                 MenuAction("🎯", "Blok elemen") {
                     if (!onErrorPage()) {

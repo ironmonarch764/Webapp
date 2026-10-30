@@ -204,6 +204,7 @@ fun diagText(a: Activity, prefs: SharedPreferences, filterSummary: String): Stri
     sb.append("\nAndroid: ").append(Build.VERSION.SDK_INT).append(", perangkat: ").append(Build.MANUFACTURER).append(" ").append(Build.MODEL)
     sb.append("\nFilter kosmetik: ").append(if (prefs.getBoolean("cosmetic", false)) "ON" else "OFF")
     sb.append("\nDaftar filter: ").append(filterSummary)
+    sb.append("\nDNS: ").append(prefs.getString("dns", "off")).append(" | ").append(DnsProxy.stats())
     sb.append("\n\nRenderer WebView mati terakhir: ")
         .append(ago(prefs.getString("diag_render", null), prefs.getLong("diag_render_at", 0L)))
     sb.append("\n\nCrash terakhir: ")
