@@ -1,7 +1,22 @@
 <!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>body{font-family:sans-serif;background:#111;color:#eee;text-align:center;padding:20vh 24px}
-button{background:#2563eb;color:#fff;border:0;border-radius:8px;padding:12px 24px;font-size:16px;margin:6px}</style></head>
+button{background:#2563eb;color:#fff;border:0;border-radius:8px;padding:12px 24px;font-size:16px;margin:6px}
+#why{color:#aaa;font-size:14px}#hint{color:#fbbf24;font-size:14px}</style></head>
 <body><h2>Tidak bisa membuka halaman</h2><p>Cek koneksi internet atau alamat web-nya.</p>
+<p id="why"></p><p id="hint" style="display:none">DNS kustom sedang dipakai. Bila masalahnya ada di DNS, coba DNS sistem.</p>
 <button onclick="Android.retry()">Coba lagi</button>
-<button onclick="Android.changeUrl()">Ganti alamat web</button></body></html>
+<button id="sys" style="display:none" onclick="Android.systemDns()">Pakai DNS sistem</button>
+<button onclick="Android.changeUrl()">Ganti alamat web</button>
+<script>
+(function(){
+  var q = location.search || "", m = /[?&]c=(-?\d+)/.exec(q), c = m ? parseInt(m[1], 10) : null;
+  var t = {"-2":"Nama situs tidak ditemukan (DNS).","-6":"Tidak bisa tersambung ke server.","-7":"Koneksi terputus saat membaca data.",
+           "-8":"Waktu tunggu habis.","-11":"Koneksi aman (TLS) gagal.","-5":"Proxy menolak sambungan.","-12":"Alamat web tidak valid."};
+  if (c !== null) document.getElementById("why").textContent = t[String(c)] || ("Kode galat " + c + ".");
+  if (/[?&]d=1/.test(q)) {
+    document.getElementById("hint").style.display = "block";
+    document.getElementById("sys").style.display = "inline-block";
+  }
+})();
+</script></body></html>
