@@ -73,3 +73,20 @@ Diubah:
 - FabController.kt: parameter opsional onScroll.
 - Tes: ReadingSelfTest.java (75 pemeriksaan, ikut build.yml), app/src/test/js/reading-flow.test.js (36 pemeriksaan di Chromium, dijalankan manual dengan node + playwright).
 Belum diverifikasi: build Kotlin (tidak ada Android SDK di sesi ini) dan perilaku di perangkat nyata.
+
+## Sesi 5 (DNS-over-HTTPS, proxy DNS, jaringan WebView) - selesai
+Masalah terkonfirmasi (dari kode) dan perbaikan:
+- NXDOMAIN / "tanpa alamat" / alamat 0.0.0.0 dari DoH dianggap gagal lalu DIAM-DIAM beralih ke DNS sistem (filter DNS kustom bisa ditembus, kueri bocor). Kini jawaban sah dari server pilihan dihormati; cadangan sistem HANYA untuk kegagalan transport (jaringan/TLS/timeout/HTTP bukan 200/isi bukan JSON DNS) dan diberitahukan (toast + log, tanpa nama host; label menu DNS ikut berubah).
+- Data jawaban DoH diteruskan ke InetAddress.getByName tanpa validasi: data non-IP memicu pencarian DNS sistem (kebocoran/menggantung). Kini literal IPv4/IPv6 diurai ketat tanpa menyentuh DNS.
+- Tanpa status DNS, tanpa batas ukuran respons, JSON longgar (org.json) -> kini JSON ketat, wajib field Status, maks 64 KB, batas total waktu baca, redirect tidak diikuti.
+- Cache: TTL tetap 5 menit mengabaikan TTL jawaban; hasil lama dari konfigurasi sebelumnya bisa masuk cache setelah ganti DNS (race); tak terbatas. Kini TTL jawaban (min semua rekaman termasuk CNAME) dibatasi 10 dtk..5 menit, cache negatif 30 dtk, kegagalan 5 dtk, cadangan sistem 30 dtk, LRU 512 entri, satu resolver per konfigurasi (ganti DNS = cache baru + permintaan lama dibatalkan).
+- IPv4 diutamakan (dipertahankan), tapi IPv6 tidak pernah dicoba bila A ada namun semua sambungan gagal. Kini AAAA dicari hanya bila A kosong / semua sambungan IPv4 gagal (tanpa tambahan kueri di jalur normal).
+- DNS sistem sebagai cadangan tanpa batas waktu; sambungan maks 4 alamat x 10 dtk. Kini cadangan dibatasi 8 dtk, total sambungan 20 dtk, pemutus sirkuit (3 gagal beruntun -> DoH dilewati 30 dtk), kueri sama bersamaan digabung (singleflight).
+- DnsProxy.stop() global (temuan #6): Activity lama bisa mematikan proxy Activity baru. Kini stop(owner) hanya oleh pemilik; stopAll() saat memilih DNS sistem. Semua soket aktif dilacak dan ditutup saat proxy berhenti. Port gagal dibuka kini diberitahukan dan override lama dilepas (sebelumnya diam).
+- HTTP biasa yang gagal tidak dijawab sama sekali; kini 502/400 seperti CONNECT.
+- Alamat DoH kustom hanya dicek awalan https://. Kini divalidasi (URI, host sah, tanpa userinfo/#, port). Alamat tersimpan yang tidak valid diberitahukan (dulu diam-diam DNS sistem tapi label "Kustom"). Label menu menampilkan keadaan nyata (WebView tidak mendukung, gagal dimulai, cadangan aktif). Uji server DoH otomatis setelah memilih DNS.
+- Halaman error: "Coba lagi"/"Muat ulang" kini memuat ulang halaman yang gagal (dulu selalu halaman awal); menampilkan penyebab (kode) dan tombol "Pakai DNS sistem" bila DNS kustom aktif.
+- normalize(): skema huruf besar dan karakter kontrol ditangani.
+File: DohResolver.java (baru, diuji), DohResolverSelfTest.java (209 pemeriksaan, ikut build.yml), DnsProxy.kt, MainActivity.kt, Diag.kt (baris DNS di Info diagnosa), error.html, build.yml.
+Belum diverifikasi: build Kotlin dan perilaku di perangkat (tidak ada Kotlin/Android SDK di sesi ini).
+Keterbatasan: lihat laporan sesi (addDirect, DoH hanya JSON, nama LAN hanya lewat DNS sistem, trafik non-WebView memakai DNS sistem).
