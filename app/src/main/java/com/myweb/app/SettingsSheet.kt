@@ -148,7 +148,7 @@ fun showSettingsSheet(a: Activity, title: String, build: () -> List<SettingSecti
     root.requestApplyInsets()
 }
 
-private fun buildRow(a: Activity, row: SettingRow, px: (Int) -> Int, rerender: () -> Unit): View {
+internal fun buildRow(a: Activity, row: SettingRow, px: (Int) -> Int, rerender: () -> Unit): View {
     val match = ViewGroup.LayoutParams.MATCH_PARENT
     val wrap = ViewGroup.LayoutParams.WRAP_CONTENT
 

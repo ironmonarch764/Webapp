@@ -46,14 +46,14 @@ fun showSitesSheet(
             bottomMargin = px(14)
         })
     root.addView(TextView(a).apply {
-        text = "Situs tersimpan"
+        text = "Situs"
         textSize = 18f
         setTextColor(Color.WHITE)
         typeface = Typeface.DEFAULT_BOLD
     })
 
     val newBtn = TextView(a).apply {
-        text = "＋  Situs baru"
+        text = "＋  Buka alamat baru"
         textSize = 15f
         setTextColor(Color.WHITE)
         gravity = Gravity.CENTER

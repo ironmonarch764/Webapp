@@ -78,6 +78,7 @@ class MainActivity : AppCompatActivity() {
     private var lastUpgradeUrl = ""
     private var lastUpgradeAt = 0L
     private val warnedHttp = HashSet<String>()
+    private lateinit var swipe: androidx.swiperefreshlayout.widget.SwipeRefreshLayout
     private var failedUrl: String? = null     // halaman utama yang terakhir gagal dimuat (untuk "Coba lagi")
     private var dnsState = ""                 // kosong = DNS terpilih benar-benar dipasang; selain itu alasan tidak aktif
 
@@ -182,13 +183,27 @@ class MainActivity : AppCompatActivity() {
         return b.isNotEmpty() && (b == siteBase || b == configBase)
     }
 
+    private fun adBlockOn() = prefs.getBoolean("adblock", true)
+
+    // Saklar utama pemblokir iklan: mati = tidak ada permintaan/jendela yang diblokir dan CSS penyembunyi iklan tidak dipasang
+    // (elemen yang disembunyikan pengguna sendiri tetap berlaku)
+    private fun setAdBlock(on: Boolean) {
+        prefs.edit().putBoolean("adblock", on).apply()
+        Toast.makeText(this, if (on) "Pemblokir iklan aktif" else "Pemblokir iklan dimatikan", Toast.LENGTH_SHORT).show()
+        logEvent(this, "pemblokir iklan " + (if (on) "ON" else "OFF"))
+        if (!onErrorPage()) webView.reload()
+        refreshSettingsSheet()
+    }
+
     private fun isAd(host: String?): Boolean {
+        if (!adBlockOn()) return false
         if (host.isNullOrEmpty() || isFirstParty(host)) return false
         return sharedRules.isBlocked(host)
     }
 
     // Untuk jendela popup dan pengalihan otomatis: aturan $popup ikut berlaku
     private fun isPopupAd(host: String?): Boolean {
+        if (!adBlockOn()) return false
         if (host.isNullOrEmpty() || isFirstParty(host)) return false
         return sharedRules.isBlocked(host) || sharedRules.isPopupBlocked(host)
     }
@@ -292,11 +307,11 @@ class MainActivity : AppCompatActivity() {
     private fun injectCss(v: WebView, logStats: Boolean = false) {
         // filter kosmetik daftar (opsional) hanya untuk host halaman ini; aturan buatan pengguna dan BASE_CSS selalu berlaku
         val host = Uri.parse(v.url ?: "").host
-        val cosmeticOn = prefs.getBoolean("cosmetic", false)
+        val cosmeticOn = prefs.getBoolean("cosmetic", false) && adBlockOn()
         val listCss = if (host != null && cosmeticOn) sharedRules.cssFor(host) else ""
         // jumlah aturan yang disuntikkan ke halaman ini (tanpa host) supaya beban kosmetik per halaman bisa dinilai dari log
         if (logStats && cosmeticOn) logEvent(this, "kosmetik halaman: " + listCss.count { it == '\n' } + " aturan, " + listCss.length / 1024 + " KB")
-        val css = listCss + "\n" + userCss() + "\n" + BASE_CSS
+        val css = listCss + "\n" + userCss() + "\n" + (if (adBlockOn()) BASE_CSS else "")
         val js = "(function(){if(document.getElementById('__adb'))return;var s=document.createElement('style');s.id='__adb';s.textContent=" +
             JSONObject.quote(css) + ";(document.head||document.documentElement).appendChild(s);})();"
         v.evaluateJavascript(js, null)
@@ -404,6 +419,7 @@ class MainActivity : AppCompatActivity() {
      }
 
         webView = findViewById(R.id.webView)
+        swipe = findViewById(R.id.swipe)
         LoginSupport.setup(webView)
         webView.setBackgroundColor(Color.BLACK)
         progress = findViewById(R.id.progress)
@@ -427,6 +443,17 @@ class MainActivity : AppCompatActivity() {
         
         }
         applyColorFilter(webView, prefs) 
+        // Tarik layar ke bawah (saat di paling atas halaman) untuk menyegarkan, seperti di peramban
+        val dpi = resources.displayMetrics.density
+        swipe.setColorSchemeColors(0xFF5B8CFF.toInt())
+        swipe.setProgressBackgroundColorSchemeColor(0xFF26282E.toInt())
+        swipe.setProgressViewOffset(false, (16 * dpi).toInt(), (80 * dpi).toInt())
+        swipe.setOnChildScrollUpCallback { _, _ -> webView.scrollY > 0 || pickerActive || autoPanel.modeOn }
+        swipe.setOnRefreshListener {
+            if (onErrorPage()) retryFailed() else webView.reload()
+            swipe.postDelayed({ swipe.isRefreshing = false }, 15000)   // pengaman: spinner tidak boleh berputar selamanya
+        }
+        swipe.isEnabled = prefs.getBoolean("pull_refresh", true)
         CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true)
         webView.addJavascriptInterface(Bridge(), "Android")
 
@@ -456,7 +483,7 @@ class MainActivity : AppCompatActivity() {
                         return true
                     }
                 }
-                if (!firstLoad && siteBase.isNotEmpty() && blockCross && baseDomain(u.host) != siteBase) {
+                if (!firstLoad && siteBase.isNotEmpty() && blockCross && baseDomain(u.host) != siteBase && !isLoginProvider(u.host)) {
                     Toast.makeText(this@MainActivity, "Pindah domain diblokir: " + u.host, Toast.LENGTH_SHORT).show()
                     return true
                 }
@@ -480,6 +507,7 @@ class MainActivity : AppCompatActivity() {
             }
 
             override fun onPageFinished(v: WebView, url: String?) {
+                swipe.isRefreshing = false
                 if (url == null || url.startsWith("file:")) return
                 renderGoneCount = 0
                 failedUrl = null
@@ -515,6 +543,7 @@ class MainActivity : AppCompatActivity() {
                 // jangan memuat ulang halaman error bila halaman error itu sendiri yang gagal (cegah perulangan)
                 if (req.isForMainFrame && !req.url.toString().startsWith("file:")) {
                     logEvent(this@MainActivity, "gagal memuat halaman: kode " + err.errorCode + " " + err.description)
+                    swipe.isRefreshing = false
                     val u = req.url.toString()
                     if (u.startsWith("http://") || u.startsWith("https://")) failedUrl = u
                     // kode galat + penanda DNS kustom dikirim ke halaman error (hanya angka/flag, bukan alamat)
@@ -594,6 +623,7 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
     closePopup()
     val popup = WebView(this@MainActivity)
     popup.settings.javaScriptEnabled = true
+    popup.settings.userAgentString = webView.settings.userAgentString   // jendela popup (mis. masuk dengan Google) memakai UA yang sama
     popup.settings.domStorageEnabled = true
     popup.settings.allowFileAccess = false
     popup.settings.allowContentAccess = false
@@ -947,36 +977,89 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
         listOf("cf_b", "cf_c", "cf_s", "cf_w").any { prefs.getInt(it, 50) != 50 } ||
             prefs.getInt("fx_sm", 0) != 0 || prefs.getInt("fx_sh", 0) != 0
 
-    // Menu cepat: hanya aksi yang sering dipakai saat membaca. Sisanya ada di Pengaturan.
+    // Menu cepat (kartu di tengah layar): hanya aksi yang sering dipakai. Sisanya ada di Pengaturan.
     private fun showMenu() {
         autoScroller.stop()   // halaman tidak boleh terus bergerak di belakang menu
         val host = Uri.parse(webView.url ?: currentUrl).host?.removePrefix("www.")
+        val edgeOn = prefs.getBoolean("edge_on", true)
+        val scrollParts = ArrayList<String>()
+        if (autoPanel.modeOn) scrollParts.add("Otomatis")
+        if (edgeOn) scrollParts.add("Tepi")
+        val adOn = adBlockOn()
+        val colorOn = colorFilterActive()
         showMenuSheet(
             this,
             if (host.isNullOrEmpty()) "Menu" else host,
             listOf(
                 MenuAction("🔄", "Segarkan") { if (onErrorPage()) retryFailed() else webView.reload() },
                 MenuAction("🏠", "Beranda") { load() },
-                MenuAction("🔖", "Situs tersimpan") { showSites() },
-                MenuAction("🌐", "Buka alamat") { askUrl(cancelable = true) },
-                MenuAction("⏬", "Gulir otomatis", autoPanel.modeOn) { autoPanel.toggle() },
-                MenuAction("🎨", "Penyesuaian warna", colorFilterActive()) { showColorFilterSheet(this, webView, prefs) },
-                MenuAction("🎯", "Sembunyikan elemen") {
-                    if (!onErrorPage()) {
-                        val tk = pickerToken ?: newPickerToken().also { pickerToken = it }
-                        pickerActive = true
-                        webView.evaluateJavascript(PICKER_JS.replace("__PK_TOKEN__", tk), null)
-                    }
-                },
+                MenuAction("🔖", "Situs") { showSites() },
+                MenuAction("🛡️", "Pemblokir iklan", adOn, if (adOn) "ON" else "OFF") { setAdBlock(!adOn) },
+                MenuAction("⏬", "Gulir", autoPanel.modeOn || edgeOn, if (scrollParts.isEmpty()) "OFF" else scrollParts.joinToString(" + ")) { showScrollPopup() },
+                MenuAction("🎨", "Penyesuaian warna", colorOn, if (colorOn) "Kustom" else "Normal") { showColorFilterSheet(this, webView, prefs) },
+                MenuAction("🎯", "Sembunyikan elemen") { showElementPopup() },
                 MenuAction("⚙️", "Pengaturan") { showSettings() }
             )
         )
     }
 
+    // Gulir otomatis dan gulir ketuk-tepi: satu menu, tetapi saklar on/off-nya terpisah
+    private fun showScrollPopup() {
+        showPopupCard(this, "Gulir", listOf(
+            SettingRow.Toggle("⏬", "Gulir otomatis", "Halaman bergulir sendiri; panel kecepatan muncul di layar", autoPanel.modeOn) { on ->
+                if (on != autoPanel.modeOn) autoPanel.toggle()
+                if (on) dismissMenuSheet()
+            },
+            SettingRow.Toggle("👆", "Gulir ketuk-tepi", "Ketuk tepi layar untuk menggulir halaman", prefs.getBoolean("edge_on", true)) { on ->
+                prefs.edit().putBoolean("edge_on", on).apply()
+            }
+        ))
+    }
+
+    // Memilih elemen yang disembunyikan dan mengatur ulangnya: satu menu
+    private fun showElementPopup() {
+        showPopupCard(this, "Sembunyikan elemen", listOf(
+            SettingRow.Action("🎯", "Pilih elemen untuk disembunyikan", "Ketuk bagian halaman yang ingin dihilangkan") {
+                dismissMenuSheet()
+                if (!onErrorPage()) {
+                    val tk = pickerToken ?: newPickerToken().also { pickerToken = it }
+                    pickerActive = true
+                    webView.evaluateJavascript(PICKER_JS.replace("__PK_TOKEN__", tk), null)
+                }
+            },
+            SettingRow.Action("🧹", "Atur ulang elemen tersembunyi", "Tampilkan lagi elemen yang disembunyikan di situs ini") {
+                dismissMenuSheet()
+                val key = "blk:" + baseDomain(Uri.parse(webView.url ?: "").host)
+                prefs.edit().remove(key).apply()
+                webView.reload()
+                Toast.makeText(this, "Elemen tersembunyi di situs ini direset", Toast.LENGTH_SHORT).show()
+            }
+        ))
+    }
+
     private fun showSettings() {
         showSettingsSheet(this, "Pengaturan") {
+            val infos = accountInfos()
+            val g = infos.firstOrNull { it.site == "google.com" }
+            val others = infos.count { it.session && it.site != "google.com" }
+            val parts = ArrayList<String>()
+            if (g != null && g.session) {
+                parts.add(if (googleEmails.isNotEmpty()) googleEmails[0] else "Google: masuk")
+                if (googleEmails.isEmpty()) refreshGoogleEmails()
+            }
+            if (others > 0) parts.add(others.toString() + " situs")
             listOf(
+                SettingSection("Akun", listOf(
+                    SettingRow.Action("👤", "Akun dan sesi masuk",
+                        if (parts.isEmpty()) "Belum ada sesi masuk terdeteksi" else parts.joinToString(" · ")) {
+                        showAccounts()
+                    }
+                )),
                 SettingSection("Tampilan dan membaca", listOf(
+                    SettingRow.Toggle("↻", "Tarik untuk menyegarkan", "Tarik halaman ke bawah dari bagian atas untuk memuat ulang", prefs.getBoolean("pull_refresh", true)) { on ->
+                        prefs.edit().putBoolean("pull_refresh", on).apply()
+                        swipe.isEnabled = on
+                    },
                     SettingRow.Toggle("🖼️", "Pramuat gambar", "Memuat gambar di depan posisi baca lebih awal", preloadOn()) { on ->
                         prefs.edit().putBoolean("preload", on).apply()
                         if (on) injectPreload(webView) else webView.evaluateJavascript("window.__preOff=1", null)
@@ -1002,11 +1085,14 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
                     }
                 )),
                 SettingSection("Privasi dan pemblokiran", listOf(
-                    SettingRow.Toggle("🛡️", "Cegah pengalihan domain", "Blokir pindah ke domain lain (berlaku per situs)", blockCross) { on ->
+                    SettingRow.Toggle("🛡️", "Pemblokir iklan", "Saklar utama: blokir iklan, pelacak, dan jendela iklan", adBlockOn()) { on ->
+                        setAdBlock(on)
+                    },
+                    SettingRow.Toggle("🛑", "Cegah pengalihan domain", "Blokir pindah ke domain lain (berlaku per situs)", blockCross) { on ->
                         blockCross = on
                         Toast.makeText(this, if (on) "Pengalihan domain diblokir" else "Pengalihan domain diizinkan", Toast.LENGTH_SHORT).show()
                     },
-                    SettingRow.Toggle("🧩", "Penyembunyi elemen iklan", "Sembunyikan kotak iklan yang tersisa di halaman", prefs.getBoolean("cosmetic", false)) { on ->
+                    SettingRow.Toggle("🧩", "Penyembunyi elemen iklan", "Sembunyikan kotak iklan yang tersisa (butuh pemblokir iklan aktif)", prefs.getBoolean("cosmetic", false)) { on ->
                         prefs.edit().putBoolean("cosmetic", on).apply()
                         Toast.makeText(this, if (on) "Diaktifkan, memproses daftar..." else "Dimatikan", Toast.LENGTH_SHORT).show()
                         logEvent(this, "filter kosmetik " + (if (on) "ON" else "OFF"))
@@ -1018,12 +1104,6 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
                     SettingRow.Action("⬇️", "Perbarui daftar filter", "Unduh daftar iklan terbaru") {
                         Toast.makeText(this, "Mengunduh daftar filter...", Toast.LENGTH_SHORT).show()
                         refreshLists(true)
-                    },
-                    SettingRow.Action("🧹", "Atur ulang elemen tersembunyi", "Hapus elemen yang Anda sembunyikan di situs ini") {
-                        val key = "blk:" + baseDomain(Uri.parse(webView.url ?: "").host)
-                        prefs.edit().remove(key).apply()
-                        webView.reload()
-                        Toast.makeText(this, "Elemen tersembunyi di situs ini direset", Toast.LENGTH_SHORT).show()
                     }
                 )),
                 SettingSection("Jaringan", listOf(
@@ -1036,6 +1116,171 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
                 ))
             )
         }
+    }
+
+    // ---------- Akun dan sesi masuk ----------
+    // WebView tidak menyimpan nama akun. Yang bisa dilihat hanya cookie per situs, jadi daftar ini menunjukkan situs
+    // (situs tersimpan + situs yang sedang dibuka) yang tampak punya sesi masuk, dan menyediakan "keluar" (hapus cookie).
+    private class AccountInfo(val site: String, val url: String, val cookies: Int, val session: Boolean)
+
+    private val sessionCookie = Regex("(?i)(sess|sid|token|auth|login|logged|remember|jwt|user|member|account)")
+
+    private fun accountInfos(): List<AccountInfo> {
+        val cm = CookieManager.getInstance()
+        val seen = LinkedHashMap<String, String>()
+        fun add(u: String) {
+            val h = Uri.parse(u).host
+            if (h.isNullOrEmpty()) return
+            val b = baseDomain(h)
+            if (b.isNotEmpty() && !seen.containsKey(b)) seen[b] = u
+        }
+        add(currentUrl)
+        loadSites().forEach { add(it.second) }
+        seen.remove("google.com")   // Google ditampilkan tersendiri di paling atas (akun satu untuk semua situs)
+        val out = ArrayList<AccountInfo>()
+        val gUrl = "https://accounts.google.com/"
+        val gNames = (cm.getCookie(gUrl) ?: "").split(";").map { it.substringBefore('=').trim() }.filter { it.isNotEmpty() }
+        out.add(AccountInfo("google.com", gUrl, gNames.size,
+            gNames.any { it == "SID" || it == "SAPISID" || it == "LSID" || it.endsWith("PSID") }))
+        for ((b, u) in seen) {
+            val names = (cm.getCookie(u) ?: "").split(";").map { it.substringBefore('=').trim() }.filter { it.isNotEmpty() }
+            out.add(AccountInfo(b, u, names.size, names.any { sessionCookie.containsMatchIn(it) }))
+        }
+        return out
+    }
+
+    // Penyedia identitas (masuk dengan Google/Apple/Microsoft): pindah ke domain ini tidak diblokir oleh "Cegah pengalihan
+    // domain", supaya alur "Masuk dengan Google" di situs mana pun tetap jalan. Cookie sesi dipakai bersama semua situs.
+    private val googleLoginHost = Regex("^accounts\\.google\\.[a-z.]+$")
+
+    private fun isLoginProvider(host: String?): Boolean {
+        val h = (host ?: "").lowercase()
+        return googleLoginHost.matches(h) || h == "accounts.youtube.com" || h == "appleid.apple.com" ||
+            h == "idmsa.apple.com" || h == "login.microsoftonline.com" || h == "login.live.com"
+    }
+
+    @Volatile private var googleEmails: List<String> = emptyList()
+    @Volatile private var googleFetching = false
+    @Volatile private var googleFetchAt = 0L
+
+    // Alamat email akun Google yang sedang masuk (hanya di memori, tidak disimpan). Memakai cookie sesi aplikasi sendiri;
+    // bila gagal/format berubah, daftar tetap kosong dan akun hanya ditampilkan sebagai "sesi aktif".
+    private fun refreshGoogleEmails() {
+        val now = System.currentTimeMillis()
+        if (googleFetching || now - googleFetchAt < 60000) return   // jangan menembak server berulang kali
+        googleFetchAt = now
+        googleFetching = true
+        val cookie = CookieManager.getInstance().getCookie("https://accounts.google.com/") ?: ""
+        val ua = webView.settings.userAgentString
+        thread {
+            var found: List<String> = emptyList()
+            try {
+                val c = java.net.URL("https://accounts.google.com/ListAccounts?gpsia=1&source=ChromiumBrowser&json=standard")
+                    .openConnection() as java.net.HttpURLConnection
+                c.connectTimeout = 5000
+                c.readTimeout = 5000
+                c.instanceFollowRedirects = false
+                c.setRequestProperty("Cookie", cookie)
+                c.setRequestProperty("User-Agent", ua)
+                if (c.responseCode == 200) {
+                    val buf = CharArray(20000)
+                    val n = c.inputStream.bufferedReader().use { it.read(buf) }
+                    val body = if (n > 0) String(buf, 0, n) else ""
+                    found = Regex("[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}").findAll(body).map { it.value }.distinct().take(5).toList()
+                }
+                c.disconnect()
+            } catch (e: Exception) {
+            }
+            googleFetching = false
+            runOnUiThread {
+                if (!isDestroyed && found != googleEmails) {
+                    googleEmails = found
+                    refreshSettingsSheet()
+                }
+            }
+        }
+    }
+
+    private fun showAccounts() {
+        val list = accountInfos()
+        if (googleEmails.isEmpty() && list.firstOrNull()?.session == true) refreshGoogleEmails()
+        val labels = list.map {
+            if (it.site == "google.com") {
+                "Akun Google\n" + (
+                    if (it.session) (if (googleEmails.isNotEmpty()) googleEmails.joinToString(", ") else "Sesi masuk aktif") +
+                        "\nMasuk sekali, berlaku di semua situs yang memakai Google"
+                    else "Belum masuk. Ketuk untuk masuk ke Google")
+            } else {
+                it.site + "\n" + (if (it.session) "Sesi masuk aktif" else if (it.cookies > 0) "Ada cookie, belum tentu masuk" else "Belum masuk")
+            }
+        }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle("Akun dan sesi masuk")
+            .setItems(labels) { _, i ->
+                val info = list[i]
+                if (info.site == "google.com" && !info.session) {
+                    // masuk ke Google di WebView ini; cookie-nya dipakai bersama semua situs
+                    webView.loadUrl("https://accounts.google.com/")
+                } else {
+                    confirmSignOut(info)
+                }
+            }
+            .setNeutralButton("Keluar dari semua") { _, _ -> confirmSignOutAll() }
+            .setNegativeButton("Tutup", null)
+            .show()
+    }
+
+    private fun confirmSignOut(info: AccountInfo) {
+        AlertDialog.Builder(this)
+            .setTitle("Keluar dari " + info.site + "?")
+            .setMessage("Cookie situs ini dihapus dari aplikasi. Sebagian situs menyimpan sesi dengan cara lain sehingga bisa tetap masuk.")
+            .setPositiveButton("Keluar") { _, _ -> signOutSite(info) }
+            .setNegativeButton("Batal", null)
+            .show()
+    }
+
+    private fun signOutSite(info: AccountInfo) {
+        val cm = CookieManager.getInstance()
+        val host = Uri.parse(info.url).host ?: return
+        val names = (cm.getCookie(info.url) ?: "").split(";").map { it.substringBefore('=').trim() }.filter { it.isNotEmpty() }
+        val domains = LinkedHashSet<String>()
+        domains.add(host); domains.add("." + host); domains.add(info.site); domains.add("." + info.site)
+        for (n in names) {
+            cm.setCookie(info.url, n + "=; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Path=/")
+            for (dm in domains) {
+                cm.setCookie(info.url, n + "=; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Path=/; Domain=" + dm)
+            }
+        }
+        cm.flush()
+        if (info.site == "google.com") googleEmails = emptyList()
+        val left = (cm.getCookie(info.url) ?: "").split(";").count { it.isNotBlank() }
+        Toast.makeText(this,
+            if (left == 0) "Sudah keluar dari " + info.site else "Sebagian cookie " + info.site + " masih tersisa",
+            Toast.LENGTH_LONG).show()
+        logEvent(this, "keluar dari situs: sisa cookie " + left)
+        if (!onErrorPage() && baseDomain(Uri.parse(webView.url ?: "").host) == info.site) webView.reload()
+        refreshSettingsSheet()
+    }
+
+    private fun confirmSignOutAll() {
+        AlertDialog.Builder(this)
+            .setTitle("Keluar dari semua situs?")
+            .setMessage("Semua cookie di aplikasi dihapus. Anda perlu masuk lagi di setiap situs.")
+            .setPositiveButton("Keluar semua") { _, _ ->
+                googleEmails = emptyList()
+                CookieManager.getInstance().removeAllCookies { _ ->
+                    LoginSupport.save()
+                    runOnUiThread {
+                        if (!isDestroyed) {
+                            Toast.makeText(this, "Semua sesi dihapus", Toast.LENGTH_SHORT).show()
+                            if (!onErrorPage()) webView.reload()
+                            refreshSettingsSheet()
+                        }
+                    }
+                }
+            }
+            .setNegativeButton("Batal", null)
+            .show()
     }
 
     private fun loadSites(): MutableList<Pair<String, String>> {
