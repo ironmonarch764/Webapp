@@ -15,6 +15,7 @@ import android.view.ViewGroup
 import android.view.Window
 import android.webkit.WebView
 import android.widget.FrameLayout
+import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.SeekBar
@@ -141,7 +142,7 @@ fun showColorFilterSheet(a: Activity, webView: WebView, prefs: SharedPreferences
     }
 
     root.addView(TextView(a).apply {
-        text = "🎨 Filter warna"
+        text = "🎨 Penyesuaian warna"
         textSize = 18f
         setTextColor(Color.WHITE)
     }, LinearLayout.LayoutParams(match, wrap))
@@ -183,6 +184,41 @@ fun showColorFilterSheet(a: Activity, webView: WebView, prefs: SharedPreferences
     }
 
     val colorApply: () -> Unit = { applyColorFilter(webView, prefs) }
+
+    // Preset siap pakai (urutan nilai: kecerahan, kontras, saturasi, dingin/hangat). Setelah dipilih, tiap slider
+    // masih bisa disesuaikan sendiri.
+    val presets = listOf(
+        "Normal" to intArrayOf(50, 50, 50, 50),
+        "Malam" to intArrayOf(40, 45, 40, 70),
+        "Sepia" to intArrayOf(48, 45, 20, 80),
+        "Tajam" to intArrayOf(50, 65, 65, 50),
+        "Lembut" to intArrayOf(45, 40, 40, 55)
+    )
+    val chipRow = LinearLayout(a).apply { orientation = LinearLayout.HORIZONTAL }
+    presets.forEach { (name, v) ->
+        chipRow.addView(TextView(a).apply {
+            text = name
+            textSize = 13f
+            setTextColor(Color.WHITE)
+            background = GradientDrawable().apply { setColor(Color.parseColor("#2A2C33")); cornerRadius = px(16).toFloat() }
+            setPadding(px(14), px(8), px(14), px(8))
+            isClickable = true
+            setOnClickListener {
+                val e = prefs.edit()
+                CF_KEYS.forEachIndexed { i, k -> e.putInt(k, v[i]) }
+                e.apply()
+                sliders.forEach { sl ->
+                    val i = CF_KEYS.indexOf(sl.key)
+                    if (i >= 0) sl.bar.progress = v[i]
+                }
+                colorApply()
+            }
+        }, LinearLayout.LayoutParams(wrap, wrap).apply { rightMargin = px(8) })
+    }
+    root.addView(HorizontalScrollView(a).apply {
+        isHorizontalScrollBarEnabled = false
+        addView(chipRow)
+    }, LinearLayout.LayoutParams(match, wrap).apply { topMargin = px(10); bottomMargin = px(2) })
     val fxApply: () -> Unit = { applyImageFx(webView, prefs) }
 
     addSlider("Kecerahan", "cf_b", CF_DEFAULT, true, true, colorApply)

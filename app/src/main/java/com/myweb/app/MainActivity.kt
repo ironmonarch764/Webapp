@@ -359,9 +359,14 @@ class MainActivity : AppCompatActivity() {
 
     private fun preloadOn() = prefs.getBoolean("preload", true)
 
+    private fun preloadAhead() = prefs.getInt("preload_ahead", 0).coerceIn(0, 12)      // 0 = otomatis
+    private fun preloadParallel() = prefs.getInt("preload_parallel", 2).coerceIn(1, 4)
+
+    // Bila skrip sudah berjalan di halaman, injeksi ulang hanya memperbarui pengaturannya (window.__preCfg)
     private fun injectPreload(v: WebView) {
         if (!preloadOn()) return
-        v.evaluateJavascript("window.__preOff=0;" + PRELOAD_JS, null)
+        val js = PRELOAD_JS.replace("__AHEAD__", preloadAhead().toString()).replace("__MAXI__", preloadParallel().toString())
+        v.evaluateJavascript("window.__preOff=0;" + js, null)
     }
 
     // Pemulihan dijalankan DI DALAM dokumen (RESTORE_JS): menunggu tinggi dokumen cukup, terbatas 12 detik, berhenti bila
@@ -687,6 +692,7 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
         closePopup()
         fabCtl?.release()
         dismissMenuSheet()
+        dismissSettingsSheet()
         webView.stopLoading()
         (webView.parent as? android.view.ViewGroup)?.removeView(webView)
         webView.destroy()
@@ -798,6 +804,7 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
         prefs.edit().putString("dns", mode).apply()
         applyDns {
             Toast.makeText(this, "DNS: " + dnsLabel(), Toast.LENGTH_SHORT).show()
+            refreshSettingsSheet()
             if (onErrorPage()) retryFailed() else webView.reload()
             testDns()
         }
@@ -936,66 +943,101 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
         dlg.show()
     }
 
+    private fun colorFilterActive(): Boolean =
+        listOf("cf_b", "cf_c", "cf_s", "cf_w").any { prefs.getInt(it, 50) != 50 } ||
+            prefs.getInt("fx_sm", 0) != 0 || prefs.getInt("fx_sh", 0) != 0
+
+    // Menu cepat: hanya aksi yang sering dipakai saat membaca. Sisanya ada di Pengaturan.
     private fun showMenu() {
         autoScroller.stop()   // halaman tidak boleh terus bergerak di belakang menu
+        val host = Uri.parse(webView.url ?: currentUrl).host?.removePrefix("www.")
         showMenuSheet(
             this,
+            if (host.isNullOrEmpty()) "Menu" else host,
             listOf(
-                MenuAction("🔄", "Muat ulang") { if (onErrorPage()) retryFailed() else webView.reload() },
-                MenuAction("🏠", "Awal") { load() },
-                MenuAction("🎯", "Blok elemen") {
+                MenuAction("🔄", "Segarkan") { if (onErrorPage()) retryFailed() else webView.reload() },
+                MenuAction("🏠", "Beranda") { load() },
+                MenuAction("🔖", "Situs tersimpan") { showSites() },
+                MenuAction("🌐", "Buka alamat") { askUrl(cancelable = true) },
+                MenuAction("⏬", "Gulir otomatis", autoPanel.modeOn) { autoPanel.toggle() },
+                MenuAction("🎨", "Penyesuaian warna", colorFilterActive()) { showColorFilterSheet(this, webView, prefs) },
+                MenuAction("🎯", "Sembunyikan elemen") {
                     if (!onErrorPage()) {
                         val tk = pickerToken ?: newPickerToken().also { pickerToken = it }
                         pickerActive = true
                         webView.evaluateJavascript(PICKER_JS.replace("__PK_TOKEN__", tk), null)
                     }
                 },
-                MenuAction("🧭", "DNS: " + dnsLabel()) { showDnsDialog() }
-            ),
+                MenuAction("⚙️", "Pengaturan") { showSettings() }
+            )
+        )
+    }
+
+    private fun showSettings() {
+        showSettingsSheet(this, "Pengaturan") {
             listOf(
-                MenuAction("🌐", "Ganti alamat web") { askUrl(cancelable = true) },
-                MenuAction("🔖", "Situs tersimpan") { showSites() },
-                MenuAction("🎨", "Filter warna") { showColorFilterSheet(this, webView, prefs) },
-                MenuAction("⏬", "Auto-scroll: " + (if (autoPanel.modeOn) "ON" else "OFF")) { autoPanel.toggle() },
-                MenuAction("🖼️", "Muat gambar awal: " + (if (preloadOn()) "ON" else "OFF")) {
-                    val on = !preloadOn()
-                    prefs.edit().putBoolean("preload", on).apply()
-                    if (on) injectPreload(webView) else webView.evaluateJavascript("window.__preOff=1", null)
-                    Toast.makeText(this, if (on) "Muat gambar awal aktif" else "Muat gambar awal mati", Toast.LENGTH_SHORT).show()
-                },
-                MenuAction("🧩", "Filter kosmetik: " + (if (prefs.getBoolean("cosmetic", false)) "ON" else "OFF")) {
-                    val on = !prefs.getBoolean("cosmetic", false)
-                    prefs.edit().putBoolean("cosmetic", on).apply()
-                    Toast.makeText(this, if (on) "Filter kosmetik aktif, memproses daftar..." else "Filter kosmetik mati", Toast.LENGTH_SHORT).show()
-                    logEvent(this, "filter kosmetik " + (if (on) "ON" else "OFF"))
-                    thread {
-                        parseLists()
-                        runOnUiThread { if (!isDestroyed) webView.reload() }
+                SettingSection("Tampilan dan membaca", listOf(
+                    SettingRow.Toggle("🖼️", "Pramuat gambar", "Memuat gambar di depan posisi baca lebih awal", preloadOn()) { on ->
+                        prefs.edit().putBoolean("preload", on).apply()
+                        if (on) injectPreload(webView) else webView.evaluateJavascript("window.__preOff=1", null)
+                    },
+                    SettingRow.Level(
+                        "📚", "Gambar dimuat di depan", "Otomatis menyesuaikan koneksi dan RAM perangkat",
+                        0, 12, preloadAhead(),
+                        { v -> if (v == 0) "Otomatis" else v.toString() + " gambar" }
+                    ) { v ->
+                        prefs.edit().putInt("preload_ahead", v).apply()
+                        if (preloadOn()) injectPreload(webView)
+                    },
+                    SettingRow.Level(
+                        "⚡", "Unduhan bersamaan", "Jumlah gambar yang diunduh sekaligus oleh pramuat",
+                        1, 4, preloadParallel(),
+                        { v -> v.toString() + " sekaligus" }
+                    ) { v ->
+                        prefs.edit().putInt("preload_parallel", v).apply()
+                        if (preloadOn()) injectPreload(webView)
+                    },
+                    SettingRow.Toggle("👆", "Gulir ketuk-tepi", "Ketuk tepi layar untuk menggulir halaman", prefs.getBoolean("edge_on", true)) { on ->
+                        prefs.edit().putBoolean("edge_on", on).apply()
                     }
-                },
-                MenuAction("🩺", "Info diagnosa") { showDiagDialog(this, prefs, sharedRules.summary()) },
-                MenuAction("👆", "Ketuk tepi: " + (if (prefs.getBoolean("edge_on", true)) "ON" else "OFF")) {
-                    val on = !prefs.getBoolean("edge_on", true)
-                    prefs.edit().putBoolean("edge_on", on).apply()
-                    Toast.makeText(this, if (on) "Ketuk tepi aktif" else "Ketuk tepi mati", Toast.LENGTH_SHORT).show()
-                },
-                MenuAction("🧹", "Hapus blokir elemen situs ini") {
-                    val key = "blk:" + baseDomain(Uri.parse(webView.url ?: "").host)
-                    prefs.edit().remove(key).apply()
-                    webView.reload()
-                    Toast.makeText(this, "Blokir elemen situs ini dihapus", Toast.LENGTH_SHORT).show()
-                },
-                MenuAction("⬇️", "Perbarui daftar iklan") {
-                    Toast.makeText(this, "Mengunduh daftar iklan...", Toast.LENGTH_SHORT).show()
-                    refreshLists(true)
-                }
-            ),
-            blockCross
-        ) { on ->
-            blockCross = on
-            Toast.makeText(this, if (on) "Pindah domain diblokir" else "Pindah domain diizinkan", Toast.LENGTH_SHORT).show()
+                )),
+                SettingSection("Privasi dan pemblokiran", listOf(
+                    SettingRow.Toggle("🛡️", "Cegah pengalihan domain", "Blokir pindah ke domain lain (berlaku per situs)", blockCross) { on ->
+                        blockCross = on
+                        Toast.makeText(this, if (on) "Pengalihan domain diblokir" else "Pengalihan domain diizinkan", Toast.LENGTH_SHORT).show()
+                    },
+                    SettingRow.Toggle("🧩", "Penyembunyi elemen iklan", "Sembunyikan kotak iklan yang tersisa di halaman", prefs.getBoolean("cosmetic", false)) { on ->
+                        prefs.edit().putBoolean("cosmetic", on).apply()
+                        Toast.makeText(this, if (on) "Diaktifkan, memproses daftar..." else "Dimatikan", Toast.LENGTH_SHORT).show()
+                        logEvent(this, "filter kosmetik " + (if (on) "ON" else "OFF"))
+                        thread {
+                            parseLists()
+                            runOnUiThread { if (!isDestroyed) webView.reload() }
+                        }
+                    },
+                    SettingRow.Action("⬇️", "Perbarui daftar filter", "Unduh daftar iklan terbaru") {
+                        Toast.makeText(this, "Mengunduh daftar filter...", Toast.LENGTH_SHORT).show()
+                        refreshLists(true)
+                    },
+                    SettingRow.Action("🧹", "Atur ulang elemen tersembunyi", "Hapus elemen yang Anda sembunyikan di situs ini") {
+                        val key = "blk:" + baseDomain(Uri.parse(webView.url ?: "").host)
+                        prefs.edit().remove(key).apply()
+                        webView.reload()
+                        Toast.makeText(this, "Elemen tersembunyi di situs ini direset", Toast.LENGTH_SHORT).show()
+                    }
+                )),
+                SettingSection("Jaringan", listOf(
+                    SettingRow.Action("🧭", "DNS aman (DoH)", dnsLabel()) { showDnsDialog() }
+                )),
+                SettingSection("Lanjutan", listOf(
+                    SettingRow.Action("🩺", "Diagnostik", "Ringkasan teknis untuk pelaporan masalah") {
+                        showDiagDialog(this, prefs, sharedRules.summary())
+                    }
+                ))
+            )
         }
     }
+
     private fun loadSites(): MutableList<Pair<String, String>> {
         val out = mutableListOf<Pair<String, String>>()
         try {

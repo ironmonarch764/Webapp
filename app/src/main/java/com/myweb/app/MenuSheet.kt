@@ -11,10 +11,10 @@ import android.view.ViewGroup
 import android.view.Window
 import android.widget.FrameLayout
 import android.widget.LinearLayout
-import android.widget.Switch
 import android.widget.TextView
 
-class MenuAction(val icon: String, val label: String, val onClick: () -> Unit)
+// active = fitur sedang menyala (kotak disorot)
+class MenuAction(val icon: String, val label: String, val active: Boolean = false, val onClick: () -> Unit)
 
 private val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
 private val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
@@ -26,17 +26,12 @@ fun dismissMenuSheet() {
     currentSheet = null
 }
 
-fun showMenuSheet(
-    a: Activity,
-    quick: List<MenuAction>,
-    items: List<MenuAction>,
-    crossOn: Boolean,
-    onCross: (Boolean) -> Unit
-) {
+// Menu cepat: kisi 4 kolom berisi aksi yang sering dipakai. Fitur lain ada di Pengaturan.
+fun showMenuSheet(a: Activity, header: String, tiles: List<MenuAction>) {
     val d = Dialog(a)
     try { currentSheet?.dismiss() } catch (e: Exception) { }
-currentSheet = d
-d.setOnDismissListener { if (currentSheet === d) currentSheet = null }
+    currentSheet = d
+    d.setOnDismissListener { if (currentSheet === d) currentSheet = null }
     d.requestWindowFeature(Window.FEATURE_NO_TITLE)
     d.setCancelable(true)
     d.setCanceledOnTouchOutside(true)
@@ -50,77 +45,77 @@ d.setOnDismissListener { if (currentSheet === d) currentSheet = null }
 
     val root = LinearLayout(a).apply {
         orientation = LinearLayout.VERTICAL
-        background = rounded(Color.parseColor("#1F2024"), px(26).toFloat(), true)
-        setPadding(px(18), px(10), px(18), px(24))
+        background = rounded(Color.parseColor("#1A1B1F"), px(28).toFloat(), true)
+        setPadding(px(16), px(10), px(16), px(20))
         isClickable = true
     }
 
-    val handle = View(a).apply { background = rounded(0x44FFFFFF, px(3).toFloat()) }
-    root.addView(handle, LinearLayout.LayoutParams(px(40), px(5)).apply {
-        gravity = Gravity.CENTER_HORIZONTAL
-        bottomMargin = px(14)
-    })
-
-    val row = LinearLayout(a).apply { orientation = LinearLayout.HORIZONTAL }
-    quick.forEachIndexed { i, q ->
-        val tile = LinearLayout(a).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER
-            background = rounded(Color.parseColor("#2A2C33"), px(18).toFloat())
-            setPadding(0, px(14), 0, px(12))
-            isClickable = true
-            setOnClickListener { d.dismiss(); q.onClick() }
-        }
-        tile.addView(TextView(a).apply { text = q.icon; textSize = 24f; gravity = Gravity.CENTER })
-        tile.addView(TextView(a).apply {
-            text = q.label
-            textSize = 12f
-            setTextColor(Color.parseColor("#D0D3DC"))
-            gravity = Gravity.CENTER
-            setPadding(0, px(6), 0, 0)
+    root.addView(View(a).apply { background = rounded(0x44FFFFFF, px(3).toFloat()) },
+        LinearLayout.LayoutParams(px(40), px(5)).apply {
+            gravity = Gravity.CENTER_HORIZONTAL
+            bottomMargin = px(12)
         })
-        row.addView(tile, LinearLayout.LayoutParams(0, WRAP, 1f).apply { if (i > 0) leftMargin = px(10) })
-    }
-    root.addView(row, LinearLayout.LayoutParams(MATCH, WRAP).apply { bottomMargin = px(12) })
 
-    items.forEach { item ->
-        val r = LinearLayout(a).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(px(10), px(14), px(10), px(14))
-            isClickable = true
-            setOnClickListener { d.dismiss(); item.onClick() }
-        }
-        r.addView(TextView(a).apply { text = item.icon; textSize = 20f }, LinearLayout.LayoutParams(px(36), WRAP))
-        r.addView(TextView(a).apply {
-            text = item.label
-            textSize = 16f
-            setTextColor(Color.WHITE)
-        })
-        root.addView(r)
-    }
-
-    val swRow = LinearLayout(a).apply {
-        orientation = LinearLayout.HORIZONTAL
-        gravity = Gravity.CENTER_VERTICAL
-        setPadding(px(10), px(8), px(10), px(8))
-    }
-    swRow.addView(TextView(a).apply { text = "🛡️"; textSize = 20f }, LinearLayout.LayoutParams(px(36), WRAP))
-    swRow.addView(TextView(a).apply {
-        text = "Blokir pindah domain"
+    // Kepala: situs yang sedang dibuka
+    root.addView(TextView(a).apply {
+        text = header
         textSize = 16f
         setTextColor(Color.WHITE)
-    }, LinearLayout.LayoutParams(0, WRAP, 1f))
-    swRow.addView(Switch(a).apply {
-        isChecked = crossOn
-        setOnCheckedChangeListener { _, c -> onCross(c) }
-    })
-    root.addView(swRow)
+        setTypeface(null, android.graphics.Typeface.BOLD)
+        maxLines = 1
+        ellipsize = android.text.TextUtils.TruncateAt.END
+        setPadding(px(6), 0, px(6), 0)
+    }, LinearLayout.LayoutParams(MATCH, WRAP))
+    root.addView(TextView(a).apply {
+        text = "Menu cepat"
+        textSize = 12f
+        setTextColor(Color.parseColor("#8A8E99"))
+        setPadding(px(6), px(2), px(6), px(12))
+    }, LinearLayout.LayoutParams(MATCH, WRAP))
+
+    val cols = 4
+    tiles.chunked(cols).forEachIndexed { ri, rowTiles ->
+        val row = LinearLayout(a).apply { orientation = LinearLayout.HORIZONTAL }
+        for (i in 0 until cols) {
+            val q = rowTiles.getOrNull(i)
+            if (q == null) {
+                row.addView(View(a), LinearLayout.LayoutParams(0, 1, 1f).apply { if (i > 0) leftMargin = px(10) })
+                continue
+            }
+            val bg = GradientDrawable().apply {
+                cornerRadius = px(18).toFloat()
+                if (q.active) {
+                    setColor(Color.parseColor("#1E3556"))
+                    setStroke(px(1), Color.parseColor("#5B8CFF"))
+                } else {
+                    setColor(Color.parseColor("#26282E"))
+                }
+            }
+            val tile = LinearLayout(a).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER
+                background = bg
+                setPadding(px(2), px(14), px(2), px(12))
+                isClickable = true
+                setOnClickListener { d.dismiss(); q.onClick() }
+            }
+            tile.addView(TextView(a).apply { text = q.icon; textSize = 22f; gravity = Gravity.CENTER })
+            tile.addView(TextView(a).apply {
+                text = q.label
+                textSize = 11.5f
+                maxLines = 2
+                setTextColor(if (q.active) Color.parseColor("#BFD3FF") else Color.parseColor("#D0D3DC"))
+                gravity = Gravity.CENTER
+                setPadding(0, px(6), 0, 0)
+            })
+            row.addView(tile, LinearLayout.LayoutParams(0, MATCH, 1f).apply { if (i > 0) leftMargin = px(10) })
+        }
+        root.addView(row, LinearLayout.LayoutParams(MATCH, WRAP).apply { if (ri > 0) topMargin = px(10) })
+    }
 
     // Seluruh layar jadi area ketuk: ketuk di luar menu = tutup
     val overlay = FrameLayout(a)
     overlay.setOnClickListener { d.dismiss() }
-    // ScrollView: kalau menu lebih tinggi dari layar (mis. HP miring), bisa digulir
     val sv = android.widget.ScrollView(a).apply {
         isVerticalScrollBarEnabled = false
         addView(root)
@@ -131,7 +126,7 @@ d.setOnDismissListener { if (currentSheet === d) currentSheet = null }
     d.window?.apply {
         setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
         setLayout(MATCH, MATCH)
-        setDimAmount(0.55f)
+        setDimAmount(0.5f)
         attributes = attributes.apply { windowAnimations = android.R.style.Animation_InputMethod }
     }
     d.show()

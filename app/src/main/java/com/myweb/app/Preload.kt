@@ -6,7 +6,8 @@ package com.myweb.app
 // Prinsip:
 //  - Jendela = AHEAD gambar (yang tidak tersembunyi) mulai dari gambar pertama yang masih dekat layar. Jendela dihitung dari
 //    posisi baca, jadi jumlah yang dimuat TIDAK bertambah terus walau gambar di depan sudah selesai.
-//  - AHEAD otomatis lebih kecil pada koneksi 2G/3G, mode hemat data, atau RAM perangkat <= 2 GB.
+//  - AHEAD ditentukan pengguna (1..12) atau, bila "otomatis" (0), lebih kecil pada koneksi 2G/3G, mode hemat data, atau RAM <= 2 GB.
+//    __AHEAD__ dan __MAXI__ (unduhan bersamaan, 1..4) diganti nilai pengaturan saat disuntikkan.
 //  - Paling banyak MAXI gambar diunduh sekaligus oleh preload, berurutan dari yang terdekat; sisanya menunggu event load/error.
 //  - Memproses elemen BUKAN berarti berhasil dimuat: tiap gambar punya status (sedang diunduh / gagal ke-n). Gagal diulang
 //    paling banyak MAXF kali dengan jeda, lalu dibiarkan.
@@ -14,16 +15,22 @@ package com.myweb.app
 //    dimuat tidak diganti, dan src yang sama tidak diset ulang (tidak ada permintaan ganda).
 const val PRELOAD_JS = """
 (function(){
-if(window.__pre){if(window.__preRun)window.__preRun();return;}
+if(window.__pre){if(window.__preCfg)window.__preCfg(__AHEAD__,__MAXI__);else if(window.__preRun)window.__preRun();return;}
 window.__pre=1;
 var A=['data-src','data-lazy-src','data-original','data-lazy','data-echo'],
- AHEAD=4,MAXI=2,MAXF=2,MAXO=4,RETRY=[1500,4000],
+ USER=__AHEAD__,MAXI=__MAXI__,MAXF=2,MAXO=4,RETRY=[1500,4000],
  st=new WeakMap(),origins={},nO=0,timer=0,first=0;
-try{
- var cn=navigator.connection,et=(cn&&cn.effectiveType)||'';
- if(/2g/.test(et)||(cn&&cn.saveData)||(navigator.deviceMemory&&navigator.deviceMemory<=2))AHEAD=2;
- else if(et==='3g')AHEAD=3;
-}catch(e){}
+// jumlah gambar di depan: pilihan pengguna (USER>0) atau otomatis menurut koneksi/RAM
+function ahead(){
+ if(USER>0)return USER;
+ var a=4;
+ try{
+  var cn=navigator.connection,et=(cn&&cn.effectiveType)||'';
+  if(/2g/.test(et)||(cn&&cn.saveData)||(navigator.deviceMemory&&navigator.deviceMemory<=2))a=2;
+  else if(et==='3g')a=3;
+ }catch(e){}
+ return a;
+}
 function pc(u){try{var o=new URL(u,location.href).origin;if(o===location.origin||origins[o]||nO>=MAXO)return;origins[o]=1;nO++;var l=document.createElement('link');l.rel='preconnect';l.href=o;(document.head||document.documentElement).appendChild(l);}catch(e){}}
 function lazySrc(m){for(var i=0;i<A.length;i++){var v=m.getAttribute(A[i]);if(v&&v.indexOf(' ')<0&&v.charAt(0)!=='{')return v;}return '';}
 function req(m){
@@ -79,7 +86,8 @@ function run(){
  while(i<n&&!ok(im[i],vh))i++;
  first=i;if(i>=n)return;
  var win=[];
- for(var j=i;j<n&&win.length<AHEAD;j++){if(j===i||ok(im[j],vh))win.push(im[j]);}
+ var AH=ahead();
+ for(var j=i;j<n&&win.length<AH;j++){if(j===i||ok(im[j],vh))win.push(im[j]);}
  var pend=0,todo=[],now=Date.now();
  for(var k=0;k<win.length;k++){var r=need(win[k],st.get(win[k]),now);if(r===2)pend++;else if(r===1)todo.push(win[k]);}
  for(var q=0;q<todo.length&&pend<MAXI;q++){
@@ -92,6 +100,8 @@ function run(){
 }
 function sched(){if(!timer)timer=setTimeout(run,300);}
 window.__preRun=sched;
+// ubah pengaturan saat berjalan (dari menu Pengaturan) tanpa memuat ulang halaman
+window.__preCfg=function(a,m){USER=a;MAXI=m;sched();};
 // selesai/gagal: lepaskan antrean dan lanjut ke gambar berikutnya; gagal dicoba lagi setelah jeda (terbatas)
 function ev(e){
  var t=e.target;if(!t||t.nodeName!=='IMG')return;
