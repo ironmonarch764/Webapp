@@ -23,6 +23,10 @@ sealed class SettingRow(val icon: String, val title: String, val subtitle: Strin
     class Action(icon: String, title: String, subtitle: String, val onClick: () -> Unit) :
         SettingRow(icon, title, subtitle)
 
+    // Baris informasi: nilai di kanan (tone 1 = baik/hijau, -1 = buruk/merah, 0 = netral); ketuk bila onClick ada
+    class Value(icon: String, title: String, subtitle: String, val value: String, val tone: Int, val onClick: (() -> Unit)?) :
+        SettingRow(icon, title, subtitle)
+
     // Slider bilangan bulat min..max; format() menghasilkan teks nilai; onChange dipanggil saat jari dilepas
     class Level(
         icon: String, title: String, subtitle: String,
@@ -197,6 +201,24 @@ internal fun buildRow(a: Activity, row: SettingRow, px: (Int) -> Int, rerender: 
             })
             box.isClickable = true
             box.setOnClickListener { row.onClick() }
+        }
+        is SettingRow.Value -> {
+            top.addView(TextView(a).apply {
+                text = row.value
+                textSize = 14f
+                setTextColor(Color.parseColor(if (row.tone > 0) "#3DDC84" else if (row.tone < 0) "#FF6B5E" else "#BFC3CC"))
+            })
+            val oc = row.onClick
+            if (oc != null) {
+                top.addView(TextView(a).apply {
+                    text = "›"
+                    textSize = 24f
+                    setTextColor(Color.parseColor("#6B6F7A"))
+                    setPadding(px(8), 0, 0, 0)
+                })
+                box.isClickable = true
+                box.setOnClickListener { oc() }
+            }
         }
         is SettingRow.Level -> {
             val valueTv = TextView(a).apply {

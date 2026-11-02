@@ -30,6 +30,8 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.webkit.ProxyConfig
 import androidx.webkit.ProxyController
+import androidx.webkit.ScriptHandler
+import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import org.json.JSONObject
 import java.io.ByteArrayInputStream
@@ -120,6 +122,36 @@ class MainActivity : AppCompatActivity() {
     
    private var popupView: WebView? = null
 
+   // Pasang WebView sebagai jendela popup di atas halaman (dipakai popup biasa dan popup login yang diizinkan)
+   private fun attachPopup(popup: WebView) {
+    closePopup()
+    popup.settings.javaScriptEnabled = true
+    popup.settings.userAgentString = webView.settings.userAgentString   // UA sama dengan halaman utama
+    popup.settings.domStorageEnabled = true
+    popup.settings.allowFileAccess = false
+    popup.settings.allowContentAccess = false
+    CookieManager.getInstance().setAcceptThirdPartyCookies(popup, !block3pOn())
+    popup.webViewClient = object : WebViewClient() {
+        @android.annotation.TargetApi(Build.VERSION_CODES.O)
+        override fun onRenderProcessGone(view: WebView?, detail: RenderProcessGoneDetail?): Boolean {
+            closePopup()
+            return true
+        }
+        override fun shouldOverrideUrlLoading(v: WebView, req: WebResourceRequest): Boolean = isPopupAd(req.url.host)
+    }
+    popup.webChromeClient = object : WebChromeClient() {
+        override fun onCloseWindow(window: WebView?) { closePopup() }
+    }
+    findViewById<android.view.ViewGroup>(android.R.id.content).addView(
+        popup,
+        FrameLayout.LayoutParams(
+            android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+            android.view.ViewGroup.LayoutParams.MATCH_PARENT
+        )
+    )
+    popupView = popup
+}
+
    private fun closePopup() {
     val p = popupView ?: return
     popupView = null
@@ -184,6 +216,59 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun adBlockOn() = prefs.getBoolean("adblock", true)
+    private fun trackerBlockOn() = prefs.getBoolean("trackerblock", true)
+    private fun popupBlockOn() = prefs.getBoolean("popupblock", true)
+    private fun gpcOn() = prefs.getBoolean("gpc", true)
+    private fun ampOn() = prefs.getBoolean("amp_unwrap", true)
+    private fun urlCleanOn() = prefs.getBoolean("url_clean", false)
+    private fun fpOn() = prefs.getBoolean("fingerprint", false)
+    private fun block3pOn() = prefs.getBoolean("block3p", false)
+    private fun httpsForceOn() = prefs.getBoolean("https_force", false)
+
+    // Hitungan permintaan yang diblokir pada halaman yang sedang dibuka (diatur ulang tiap navigasi baru)
+    private val adBlocked = java.util.concurrent.atomic.AtomicInteger()
+    private val trackerBlocked = java.util.concurrent.atomic.AtomicInteger()
+
+    // Penulisan ulang alamat navigasi sesuai pengaturan: AMP -> situs asli, buang parameter pelacak, paksa HTTPS.
+    // Pengaman putaran: alamat yang sama tidak ditulis ulang dua kali dalam 5 detik (mis. server mengembalikan ke http).
+    private var lastRwFrom = ""
+    private var lastRwAt = 0L
+    private fun rewriteUrl(url: String): String? {
+        var cur = url
+        var changed = false
+        if (ampOn()) UrlRules.unwrapAmp(cur)?.let { cur = it; changed = true }
+        if (urlCleanOn()) UrlRules.cleanTracking(cur)?.let { cur = it; changed = true }
+        if (httpsForceOn()) UrlRules.upgradeHttps(cur)?.let { cur = it; changed = true }
+        if (!changed) return null
+        val now = System.currentTimeMillis()
+        if (url == lastRwFrom && now - lastRwAt < 5000) return null
+        lastRwFrom = url
+        lastRwAt = now
+        return cur
+    }
+
+    // Skrip yang harus berjalan sebelum skrip halaman: sinyal GPC dan (dasar) perlindungan sidik jari.
+    private var docStartHandler: ScriptHandler? = null
+    private fun docStartJs(): String {
+        val sb = StringBuilder()
+        if (gpcOn()) sb.append("try{Object.defineProperty(Navigator.prototype,'globalPrivacyControl',{get:function(){return true},configurable:true})}catch(e){}")
+        if (fpOn()) sb.append("(function(){var d=function(k,v){try{Object.defineProperty(Navigator.prototype,k,{get:function(){return v},configurable:true})}catch(e){}};d('hardwareConcurrency',4);d('deviceMemory',4);d('languages',Object.freeze(['en-US','en']));d('language','en-US');})();")
+        return sb.toString()
+    }
+
+    private fun applyDocStart() {
+        try { docStartHandler?.remove() } catch (e: Exception) { }
+        docStartHandler = null
+        val js = docStartJs()
+        if (js.isEmpty()) return
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+            try {
+                docStartHandler = WebViewCompat.addDocumentStartJavaScript(webView, js, setOf("*"))
+            } catch (e: Exception) {
+                logEvent(this, "skrip awal dokumen gagal: " + e.javaClass.simpleName)
+            }
+        }
+    }
 
     // Saklar utama pemblokir iklan: mati = tidak ada permintaan/jendela yang diblokir dan CSS penyembunyi iklan tidak dipasang
     // (elemen yang disembunyikan pengguna sendiri tetap berlaku)
@@ -454,7 +539,8 @@ class MainActivity : AppCompatActivity() {
             swipe.postDelayed({ swipe.isRefreshing = false }, 15000)   // pengaman: spinner tidak boleh berputar selamanya
         }
         swipe.isEnabled = prefs.getBoolean("pull_refresh", true)
-        CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true)
+        CookieManager.getInstance().setAcceptThirdPartyCookies(webView, !block3pOn())
+        applyDocStart()
         webView.addJavascriptInterface(Bridge(), "Android")
 
         webView.webViewClient = object : WebViewClient() {
@@ -472,6 +558,11 @@ class MainActivity : AppCompatActivity() {
                 }
                 if (!req.isForMainFrame) return false
                 if (isAd(u.host) || (!req.hasGesture() && isPopupAd(u.host))) return true
+                val rewritten = rewriteUrl(u.toString())
+                if (rewritten != null) {
+                    v.loadUrl(rewritten)
+                    return true
+                }
                 // Utamakan HTTPS: situs yang disimpan memakai https tidak boleh turun ke http (dengan pengaman agar tidak berputar)
                 if (scheme == "http" && u.port == -1 && currentUrl.startsWith("https://") &&
                     baseDomain(u.host) == baseDomain(Uri.parse(currentUrl).host)) {
@@ -491,7 +582,15 @@ class MainActivity : AppCompatActivity() {
             }
 
             override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
+                if (request != null && !request.isForMainFrame && trackerBlockOn()) {
+                    val th = request.url.host
+                    if (!th.isNullOrEmpty() && !isFirstParty(th) && Trackers.isTracker(th)) {
+                        trackerBlocked.incrementAndGet()
+                        return WebResourceResponse("text/plain", "utf-8", ByteArrayInputStream(ByteArray(0)))
+                    }
+                }
                 if (request != null && isAd(request.url.host)) {
+                    adBlocked.incrementAndGet()
                     val p = request.url.path ?: ""
                     if (p.endsWith(".js")) {
                         val js = "window.adsbygoogle=window.adsbygoogle||[];window.adsbygoogle.loaded=true;window.adsbygoogle.push=function(){};"
@@ -500,6 +599,18 @@ class MainActivity : AppCompatActivity() {
                     return WebResourceResponse("text/plain", "utf-8", ByteArrayInputStream(ByteArray(0)))
                 }
                 return null
+            }
+
+            override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
+                if (url != null && !url.startsWith("file:")) {
+                    adBlocked.set(0)
+                    trackerBlocked.set(0)
+                    // WebView lama tanpa dukungan skrip awal dokumen: jalankan secepat mungkin (lebih lambat dari skrip halaman)
+                    if (view != null && !WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+                        val js = docStartJs()
+                        if (js.isNotEmpty()) view.evaluateJavascript(js, null)
+                    }
+                }
             }
 
             override fun onPageCommitVisible(view: WebView?, url: String?) {
@@ -584,7 +695,7 @@ class MainActivity : AppCompatActivity() {
 override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Boolean, resultMsg: Message?): Boolean {
     if (!isUserGesture || resultMsg == null) return false
     val transport = resultMsg.obj as WebView.WebViewTransport
-    if (blockCross) {
+    if (popupBlockOn() && blockCross) {
         val temp = WebView(this@MainActivity)
         val ui = android.os.Handler(android.os.Looper.getMainLooper())
         var dead = false
@@ -605,6 +716,13 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
 
             override fun shouldOverrideUrlLoading(v: WebView, req: WebResourceRequest): Boolean {
                 val u = req.url
+                if (isLoginProvider(u.host) && !dead) {
+                    // Masuk dengan Google/Apple/Microsoft: jadikan jendela ini popup sungguhan (hubungan window.opener utuh)
+                    dead = true
+                    ui.removeCallbacks(kill)
+                    attachPopup(temp)
+                    return false
+                }
                 if (baseDomain(u.host) == siteBase && !isPopupAd(u.host)) {
                     webView.loadUrl(u.toString())
                 } else {
@@ -620,33 +738,8 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
         resultMsg.sendToTarget()
         return true
     }
-    closePopup()
     val popup = WebView(this@MainActivity)
-    popup.settings.javaScriptEnabled = true
-    popup.settings.userAgentString = webView.settings.userAgentString   // jendela popup (mis. masuk dengan Google) memakai UA yang sama
-    popup.settings.domStorageEnabled = true
-    popup.settings.allowFileAccess = false
-    popup.settings.allowContentAccess = false
-    CookieManager.getInstance().setAcceptThirdPartyCookies(popup, true)
-    popup.webViewClient = object : WebViewClient() {
-        @android.annotation.TargetApi(Build.VERSION_CODES.O)
-        override fun onRenderProcessGone(view: WebView?, detail: RenderProcessGoneDetail?): Boolean {
-            closePopup()
-            return true
-        }
-        override fun shouldOverrideUrlLoading(v: WebView, req: WebResourceRequest): Boolean = isPopupAd(req.url.host)
-    }
-    popup.webChromeClient = object : WebChromeClient() {
-        override fun onCloseWindow(window: WebView?) { closePopup() }
-    }
-    findViewById<android.view.ViewGroup>(android.R.id.content).addView(
-        popup,
-        FrameLayout.LayoutParams(
-            android.view.ViewGroup.LayoutParams.MATCH_PARENT,
-            android.view.ViewGroup.LayoutParams.MATCH_PARENT
-        )
-    )
-    popupView = popup
+    attachPopup(popup)
     transport.webView = popup
     resultMsg.sendToTarget()
     return true
@@ -994,13 +1087,60 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
                 MenuAction("🔄", "Segarkan") { if (onErrorPage()) retryFailed() else webView.reload() },
                 MenuAction("🏠", "Beranda") { load() },
                 MenuAction("🔖", "Situs") { showSites() },
-                MenuAction("🛡️", "Pemblokir iklan", adOn, if (adOn) "ON" else "OFF") { setAdBlock(!adOn) },
+                MenuAction("🛡️", "Perlindungan", adOn || trackerBlockOn(),
+                    if (adOn || trackerBlockOn()) (adBlocked.get() + trackerBlocked.get()).toString() + " diblokir" else "OFF") { showProtection() },
                 MenuAction("⏬", "Gulir", autoPanel.modeOn || edgeOn, if (scrollParts.isEmpty()) "OFF" else scrollParts.joinToString(" + ")) { showScrollPopup() },
                 MenuAction("🎨", "Penyesuaian warna", colorOn, if (colorOn) "Kustom" else "Normal") { showColorFilterSheet(this, webView, prefs) },
                 MenuAction("🎯", "Sembunyikan elemen") { showElementPopup() },
                 MenuAction("⚙️", "Pengaturan") { showSettings() }
             )
         )
+    }
+
+    private fun startPicker() {
+        if (onErrorPage()) return
+        val tk = pickerToken ?: newPickerToken().also { pickerToken = it }
+        pickerActive = true
+        webView.evaluateJavascript(PICKER_JS.replace("__PK_TOKEN__", tk), null)
+    }
+
+    // Kartu "Perlindungan situs" (dibuka dari menu cepat)
+    private fun showProtection() {
+        val host = Uri.parse(webView.url ?: currentUrl).host?.removePrefix("www.")
+        showProtectionCard(this, if (host.isNullOrEmpty()) "Situs" else host, adBlocked.get(), trackerBlocked.get(), { startPicker() }) {
+            val cur = webView.url ?: ""
+            listOf(
+                SettingSection("Pemblokir iklan", listOf(
+                    SettingRow.Toggle("🛡️", "Pemblokir iklan", "Blokir iklan dari daftar filter", adBlockOn()) { on -> setAdBlock(on) },
+                    SettingRow.Toggle("🪟", "Pemblokir popup", "Cegah jendela popup dan pindah domain yang tidak diminta", popupBlockOn()) { on ->
+                        prefs.edit().putBoolean("popupblock", on).apply()
+                    },
+                    SettingRow.Action("🎯", "Tandai elemen iklan", "Sembunyikan bagian halaman yang masih mengganggu") {
+                        dismissMenuSheet()
+                        startPicker()
+                    }
+                )),
+                SettingSection("Perlindungan privasi", listOf(
+                    SettingRow.Toggle("🕵️", "Pelacak",
+                        if (trackerBlocked.get() > 0) trackerBlocked.get().toString() + " diblokir di halaman ini" else "Blokir pelacak analitik dan pengukuran",
+                        trackerBlockOn()) { on ->
+                        prefs.edit().putBoolean("trackerblock", on).apply()
+                        if (!onErrorPage()) webView.reload()
+                    },
+                    SettingRow.Value("🚫", "GPC", "", if (gpcOn()) "Aktif" else "Mati", if (gpcOn()) 1 else 0) {
+                        dismissMenuSheet()
+                        showSettings()
+                    },
+                    SettingRow.Value("🔒", "Koneksi", "",
+                        if (cur.startsWith("https://")) "HTTPS" else if (cur.startsWith("http://")) "HTTP (tidak aman)" else "-",
+                        if (cur.startsWith("https://")) 1 else if (cur.startsWith("http://")) -1 else 0, null),
+                    SettingRow.Action("⚙️", "Pengaturan lainnya", "Privasi lanjutan, DNS, akun") {
+                        dismissMenuSheet()
+                        showSettings()
+                    }
+                ))
+            )
+        }
     }
 
     // Gulir otomatis dan gulir ketuk-tepi: satu menu, tetapi saklar on/off-nya terpisah
@@ -1021,11 +1161,7 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
         showPopupCard(this, "Sembunyikan elemen", listOf(
             SettingRow.Action("🎯", "Pilih elemen untuk disembunyikan", "Ketuk bagian halaman yang ingin dihilangkan") {
                 dismissMenuSheet()
-                if (!onErrorPage()) {
-                    val tk = pickerToken ?: newPickerToken().also { pickerToken = it }
-                    pickerActive = true
-                    webView.evaluateJavascript(PICKER_JS.replace("__PK_TOKEN__", tk), null)
-                }
+                startPicker()
             },
             SettingRow.Action("🧹", "Atur ulang elemen tersembunyi", "Tampilkan lagi elemen yang disembunyikan di situs ini") {
                 dismissMenuSheet()
@@ -1088,6 +1224,13 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
                     SettingRow.Toggle("🛡️", "Pemblokir iklan", "Saklar utama: blokir iklan, pelacak, dan jendela iklan", adBlockOn()) { on ->
                         setAdBlock(on)
                     },
+                    SettingRow.Toggle("🪟", "Pemblokir popup", "Cegah jendela popup yang tidak diminta", popupBlockOn()) { on ->
+                        prefs.edit().putBoolean("popupblock", on).apply()
+                    },
+                    SettingRow.Toggle("🕵️", "Pelacak", "Blokir pelacak analitik dan pengukuran (daftar bawaan)", trackerBlockOn()) { on ->
+                        prefs.edit().putBoolean("trackerblock", on).apply()
+                        if (!onErrorPage()) webView.reload()
+                    },
                     SettingRow.Toggle("🛑", "Cegah pengalihan domain", "Blokir pindah ke domain lain (berlaku per situs)", blockCross) { on ->
                         blockCross = on
                         Toast.makeText(this, if (on) "Pengalihan domain diblokir" else "Pengalihan domain diizinkan", Toast.LENGTH_SHORT).show()
@@ -1104,6 +1247,31 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
                     SettingRow.Action("⬇️", "Perbarui daftar filter", "Unduh daftar iklan terbaru") {
                         Toast.makeText(this, "Mengunduh daftar filter...", Toast.LENGTH_SHORT).show()
                         refreshLists(true)
+                    }
+                )),
+                SettingSection("Privasi lanjutan", listOf(
+                    SettingRow.Toggle("🚫", "Kontrol Privasi Global (GPC)", "Beri sinyal \"jangan jual data saya\" ke situs (lewat JavaScript)", gpcOn()) { on ->
+                        prefs.edit().putBoolean("gpc", on).apply()
+                        applyDocStart()
+                    },
+                    SettingRow.Toggle("🔗", "Perlindungan tautan AMP", "Lewati pengalihan Google, buka situs aslinya", ampOn()) { on ->
+                        prefs.edit().putBoolean("amp_unwrap", on).apply()
+                    },
+                    SettingRow.Toggle("🧼", "Pembersih pelacak URL", "Hapus parameter pelacak (utm_, fbclid, gclid, dll.) saat membuka tautan", urlCleanOn()) { on ->
+                        prefs.edit().putBoolean("url_clean", on).apply()
+                    },
+                    SettingRow.Toggle("🖐️", "Perlindungan sidik jari (dasar)", "Menyamarkan bahasa dan spesifikasi perangkat. Beberapa situs bisa tampil berbahasa Inggris", fpOn()) { on ->
+                        prefs.edit().putBoolean("fingerprint", on).apply()
+                        applyDocStart()
+                        Toast.makeText(this, "Berlaku mulai halaman berikutnya", Toast.LENGTH_SHORT).show()
+                    },
+                    SettingRow.Toggle("🍪", "Blokir cookie pihak ketiga", "Blokir pelacakan lintas situs; dapat mengganggu login", block3pOn()) { on ->
+                        prefs.edit().putBoolean("block3p", on).apply()
+                        CookieManager.getInstance().setAcceptThirdPartyCookies(webView, !on)
+                        Toast.makeText(this, "Muat ulang halaman agar berlaku", Toast.LENGTH_SHORT).show()
+                    },
+                    SettingRow.Toggle("🔒", "Paksa HTTPS", "Naikkan tautan http:// ke https:// (situs yang hanya mendukung HTTP tidak akan terbuka)", httpsForceOn()) { on ->
+                        prefs.edit().putBoolean("https_force", on).apply()
                     }
                 )),
                 SettingSection("Jaringan", listOf(

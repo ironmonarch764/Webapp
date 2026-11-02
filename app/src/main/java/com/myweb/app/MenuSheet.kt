@@ -176,3 +176,100 @@ fun showPopupCard(a: Activity, title: String, rows: List<SettingRow>) {
     }
     presentCentered(a, d, root)
 }
+
+// Kartu "Perlindungan situs": hitungan iklan/pelacak yang diblokir di halaman ini, ajakan menandai elemen iklan, lalu
+// kelompok saklar. build() dipanggil lagi setiap ada perubahan supaya nilai yang tampil ikut diperbarui.
+fun showProtectionCard(
+    a: Activity, host: String, ads: Int, trackers: Int,
+    onMark: () -> Unit, build: () -> List<SettingSection>
+) {
+    val d = newCentered(a)
+    val dp = a.resources.displayMetrics.density
+    fun px(v: Int) = (v * dp).toInt()
+
+    val root = LinearLayout(a).apply {
+        orientation = LinearLayout.VERTICAL
+        background = rounded(Color.parseColor("#1A1B1F"), px(28).toFloat())
+        setPadding(px(14), px(18), px(14), px(14))
+        isClickable = true
+    }
+    root.addView(TextView(a).apply {
+        text = "🌐  " + host
+        textSize = 15f
+        setTextColor(Color.WHITE)
+        maxLines = 1
+        ellipsize = android.text.TextUtils.TruncateAt.END
+        setPadding(px(8), 0, px(8), px(10))
+    }, LinearLayout.LayoutParams(MATCH, WRAP))
+
+    val counters = LinearLayout(a).apply { orientation = LinearLayout.HORIZONTAL }
+    fun counter(n: Int, label: String, color: String) {
+        val col = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER }
+        col.addView(TextView(a).apply {
+            text = n.toString()
+            textSize = 34f
+            setTextColor(Color.parseColor(color))
+            gravity = Gravity.CENTER
+        })
+        col.addView(TextView(a).apply {
+            text = label
+            textSize = 12.5f
+            setTextColor(Color.parseColor("#9CA0AB"))
+            gravity = Gravity.CENTER
+        })
+        counters.addView(col, LinearLayout.LayoutParams(0, WRAP, 1f))
+    }
+    counter(ads, "Iklan diblokir", "#FF6B5E")
+    counter(trackers, "Pelacak diblokir", "#3DDC84")
+    root.addView(counters, LinearLayout.LayoutParams(MATCH, WRAP).apply { bottomMargin = px(12) })
+
+    val promo = LinearLayout(a).apply {
+        orientation = LinearLayout.VERTICAL
+        background = rounded(Color.parseColor("#2B2326"), px(18).toFloat())
+        setPadding(px(16), px(12), px(16), px(12))
+        isClickable = true
+        setOnClickListener { d.dismiss(); onMark() }
+    }
+    promo.addView(TextView(a).apply {
+        text = "Iklan masih muncul?"
+        textSize = 15f
+        setTextColor(Color.WHITE)
+        setTypeface(null, android.graphics.Typeface.BOLD)
+    })
+    promo.addView(TextView(a).apply {
+        text = "Tandai elemen iklan di halaman ini  ›"
+        textSize = 12.5f
+        setTextColor(Color.parseColor("#F0A9A1"))
+        setPadding(0, px(2), 0, 0)
+    })
+    root.addView(promo, LinearLayout.LayoutParams(MATCH, WRAP))
+
+    val sections = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL }
+    root.addView(sections, LinearLayout.LayoutParams(MATCH, WRAP))
+    fun render() {
+        sections.removeAllViews()
+        for (sec in build()) {
+            sections.addView(TextView(a).apply {
+                text = sec.title
+                textSize = 14f
+                setTextColor(Color.parseColor("#7F93C9"))
+                setTypeface(null, android.graphics.Typeface.BOLD)
+                setPadding(px(8), px(14), px(8), px(6))
+            }, LinearLayout.LayoutParams(MATCH, WRAP))
+            val card = LinearLayout(a).apply {
+                orientation = LinearLayout.VERTICAL
+                background = rounded(Color.parseColor("#232529"), px(18).toFloat())
+            }
+            sec.rows.forEachIndexed { idx, row ->
+                if (idx > 0) {
+                    card.addView(View(a).apply { setBackgroundColor(Color.parseColor("#30323A")) },
+                        LinearLayout.LayoutParams(MATCH, 1).apply { leftMargin = px(58) })
+                }
+                card.addView(buildRow(a, row, { v -> px(v) }) { sections.post { render() } })
+            }
+            sections.addView(card, LinearLayout.LayoutParams(MATCH, WRAP))
+        }
+    }
+    render()
+    presentCentered(a, d, root)
+}
