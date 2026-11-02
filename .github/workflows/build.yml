@@ -28,6 +28,9 @@ jobs:
           mkdir -p /tmp/dt
           javac -d /tmp/dt app/src/main/java/com/myweb/app/DohResolver.java app/src/test/java/com/myweb/app/DohResolverSelfTest.java
           java -cp /tmp/dt com.myweb.app.DohResolverSelfTest
+          mkdir -p /tmp/ut
+          javac -d /tmp/ut app/src/main/java/com/myweb/app/UrlRules.java app/src/test/java/com/myweb/app/UrlRulesSelfTest.java
+          java -cp /tmp/ut com.myweb.app.UrlRulesSelfTest
       # Secret hanya diberikan ke langkah yang membutuhkannya (bukan ke seluruh job / action pihak ketiga)
       - name: Check signing secrets
         env:
