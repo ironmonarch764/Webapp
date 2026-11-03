@@ -1091,7 +1091,6 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
                     if (adOn || trackerBlockOn()) (adBlocked.get() + trackerBlocked.get()).toString() + " diblokir" else "OFF") { showProtection() },
                 MenuAction("⏬", "Gulir", autoPanel.modeOn || edgeOn, if (scrollParts.isEmpty()) "OFF" else scrollParts.joinToString(" + ")) { showScrollPopup() },
                 MenuAction("🎨", "Penyesuaian warna", colorOn, if (colorOn) "Kustom" else "Normal") { showColorFilterSheet(this, webView, prefs) },
-                MenuAction("🎯", "Sembunyikan elemen") { showElementPopup() },
                 MenuAction("⚙️", "Pengaturan") { showSettings() }
             )
         )
@@ -1109,17 +1108,25 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
         val host = Uri.parse(webView.url ?: currentUrl).host?.removePrefix("www.")
         showProtectionCard(this, if (host.isNullOrEmpty()) "Situs" else host, adBlocked.get(), trackerBlocked.get(), { startPicker() }) {
             val cur = webView.url ?: ""
+            val hidden = hiddenElements()
+            val adRows = ArrayList<SettingRow>()
+            adRows.add(SettingRow.Toggle("🛡️", "Pemblokir iklan", "Blokir iklan dari daftar filter", adBlockOn()) { on -> setAdBlock(on) })
+            adRows.add(SettingRow.Toggle("🪟", "Pemblokir popup", "Cegah jendela popup dan pindah domain yang tidak diminta", popupBlockOn()) { on ->
+                prefs.edit().putBoolean("popupblock", on).apply()
+            })
+            adRows.add(SettingRow.Action("🎯", "Tandai elemen iklan", "Sembunyikan bagian halaman yang masih mengganggu") {
+                dismissMenuSheet()
+                startPicker()
+            })
+            // hanya muncul bila memang ada elemen yang disembunyikan di situs ini
+            if (hidden.isNotEmpty()) {
+                adRows.add(SettingRow.Action("🧹", "Elemen tersembunyi", hidden.size.toString() + " elemen di situs ini, ketuk untuk memulihkan") {
+                    dismissMenuSheet()
+                    showHiddenElements()
+                })
+            }
             listOf(
-                SettingSection("Pemblokir iklan", listOf(
-                    SettingRow.Toggle("🛡️", "Pemblokir iklan", "Blokir iklan dari daftar filter", adBlockOn()) { on -> setAdBlock(on) },
-                    SettingRow.Toggle("🪟", "Pemblokir popup", "Cegah jendela popup dan pindah domain yang tidak diminta", popupBlockOn()) { on ->
-                        prefs.edit().putBoolean("popupblock", on).apply()
-                    },
-                    SettingRow.Action("🎯", "Tandai elemen iklan", "Sembunyikan bagian halaman yang masih mengganggu") {
-                        dismissMenuSheet()
-                        startPicker()
-                    }
-                )),
+                SettingSection("Pemblokir iklan", adRows),
                 SettingSection("Perlindungan privasi", listOf(
                     SettingRow.Toggle("🕵️", "Pelacak",
                         if (trackerBlocked.get() > 0) trackerBlocked.get().toString() + " diblokir di halaman ini" else "Blokir pelacak analitik dan pengukuran",
@@ -1156,21 +1163,41 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
         ))
     }
 
-    // Memilih elemen yang disembunyikan dan mengatur ulangnya: satu menu
-    private fun showElementPopup() {
-        showPopupCard(this, "Sembunyikan elemen", listOf(
-            SettingRow.Action("🎯", "Pilih elemen untuk disembunyikan", "Ketuk bagian halaman yang ingin dihilangkan") {
-                dismissMenuSheet()
-                startPicker()
-            },
-            SettingRow.Action("🧹", "Atur ulang elemen tersembunyi", "Tampilkan lagi elemen yang disembunyikan di situs ini") {
-                dismissMenuSheet()
-                val key = "blk:" + baseDomain(Uri.parse(webView.url ?: "").host)
-                prefs.edit().remove(key).apply()
-                webView.reload()
-                Toast.makeText(this, "Elemen tersembunyi di situs ini direset", Toast.LENGTH_SHORT).show()
-            }
-        ))
+    // ---------- Elemen yang disembunyikan pengguna (per situs) ----------
+    // Disimpan sebagai selector CSS, satu per baris, di prefs "blk:<domain>".
+    private fun hiddenKey() = "blk:" + baseDomain(Uri.parse(webView.url ?: "").host)
+
+    private fun hiddenElements(): List<String> =
+        (prefs.getString(hiddenKey(), "") ?: "").split("\n").filter { it.isNotBlank() }
+
+    // Daftar elemen yang disembunyikan di situs ini; ketuk satu untuk memulihkan hanya elemen itu
+    private fun showHiddenElements() {
+        val list = hiddenElements()
+        if (list.isEmpty()) return
+        val labels = list.mapIndexed { i, sel ->
+            (i + 1).toString() + ". " + (if (sel.length > 70) sel.take(70) + "…" else sel)
+        }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle("Elemen tersembunyi (ketuk untuk memulihkan)")
+            .setItems(labels) { _, i -> restoreHidden(list[i]) }
+            .setNeutralButton("Pulihkan semua") { _, _ -> restoreAllHidden() }
+            .setNegativeButton("Tutup", null)
+            .show()
+    }
+
+    private fun restoreHidden(selector: String) {
+        val cur = hiddenElements().toMutableList()
+        cur.remove(selector)
+        val key = hiddenKey()
+        if (cur.isEmpty()) prefs.edit().remove(key).apply() else prefs.edit().putString(key, cur.joinToString("\n")).apply()
+        Toast.makeText(this, "Elemen dipulihkan", Toast.LENGTH_SHORT).show()
+        if (!onErrorPage()) webView.reload()
+    }
+
+    private fun restoreAllHidden() {
+        prefs.edit().remove(hiddenKey()).apply()
+        Toast.makeText(this, "Semua elemen tersembunyi di situs ini dipulihkan", Toast.LENGTH_SHORT).show()
+        if (!onErrorPage()) webView.reload()
     }
 
     private fun showSettings() {
