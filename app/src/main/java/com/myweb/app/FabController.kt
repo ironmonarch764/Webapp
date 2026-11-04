@@ -8,7 +8,6 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
 import android.webkit.WebView
-import android.widget.ImageButton
 import kotlin.math.abs
 
 // Kontrol ketukan di halaman:
@@ -21,12 +20,11 @@ import kotlin.math.abs
 // Setiap kali tombol menu muncul/hilang karena ketukan ada jeda (COOLDOWN_MS).
 class FabController(
     private val webView: WebView,
-    private val fab: ImageButton,
+    private val fab: View,
     private val isBusy: () -> Boolean,
     private val edgeOn: () -> Boolean,
     private val onTouchDown: () -> Unit,
-    private val onScroll: () -> Unit = {},
-    private val onHide: () -> Unit = {}
+    private val onScroll: () -> Unit = {}
 ) {
     // ---- Pengaturan (ubah angkanya sesuai selera) ----
     private val COOLDOWN_MS = 700L      // jeda tombol menu, milidetik
@@ -77,13 +75,12 @@ class FabController(
         lockUntil = SystemClock.uptimeMillis() + COOLDOWN_MS
         shown = show
 
-        // pegangan setengah lonjong menyelinap ke tepi kanan layar saat disembunyikan
+        // tiga tombol setengah lonjong menyelinap ke tepi kanan layar saat disembunyikan
         val dist = (if (fab.width > 0) fab.width else (52 * webView.resources.displayMetrics.density).toInt()).toFloat()
         if (show) {
             fab.visibility = View.VISIBLE
             fab.animate().alpha(1f).translationX(0f).setDuration(180).start()
         } else {
-            onHide()
             fab.animate().alpha(0f).translationX(dist).setDuration(180)
                 .withEndAction { if (!shown) fab.visibility = View.INVISIBLE }
                 .start()

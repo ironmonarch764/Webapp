@@ -164,8 +164,6 @@ class MainActivity : AppCompatActivity() {
     private val autoScroller by lazy { AutoScroller(webView, prefs) }
     private val autoPanel by lazy { AutoScrollPanel(this, autoScroller, prefs) }
     private var fabCtl: FabController? = null
-    private var tools: QuickTools? = null
-    private var toolsWereOpen = false
     private fun onErrorPage(): Boolean = webView.url?.startsWith("file:") == true
 
     private fun newPickerToken(): String {
@@ -518,17 +516,10 @@ class MainActivity : AppCompatActivity() {
         LoginSupport.setup(webView)
         webView.setBackgroundColor(Color.BLACK)
         progress = findViewById(R.id.progress)
-        // Pegangan setengah lonjong di tepi kanan: diketuk = 3 tombol bulat (Menu, Penyesuaian warna, Gulir)
-        val handle = findViewById<ImageButton>(R.id.menuBtn)
-        tools = QuickTools(handle, handle.parent as FrameLayout, { showMenu() }, { showColorFilterSheet(this, webView, prefs) }, { showScrollPopup() })
-        fabCtl = FabController(
-            webView, handle,
-            { pickerActive || toolsWereOpen },   // ketukan yang hanya menutup 3 tombol tidak ikut menyembunyikan pegangan
-            { prefs.getBoolean("edge_on", true) },
-            { autoScroller.stop(); toolsWereOpen = tools?.expanded == true; tools?.collapse() },
-            { scheduleSave() },
-            { tools?.collapse() }
-        )
+        // Tiga tombol setengah lonjong di tepi kanan: Menu, Penyesuaian warna, Gulir
+        val sideTools = findViewById<LinearLayout>(R.id.menuBtn)
+        QuickTools(sideTools, { showMenu() }, { showColorFilterSheet(this, webView, prefs) }, { showScrollPopup() })
+        fabCtl = FabController(webView, sideTools, { pickerActive }, { prefs.getBoolean("edge_on", true) }, { autoScroller.stop() }, { scheduleSave() })
 
         webView.settings.apply {
             javaScriptEnabled = true
