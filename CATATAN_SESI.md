@@ -90,3 +90,32 @@ Masalah terkonfirmasi (dari kode) dan perbaikan:
 File: DohResolver.java (baru, diuji), DohResolverSelfTest.java (209 pemeriksaan, ikut build.yml), DnsProxy.kt, MainActivity.kt, Diag.kt (baris DNS di Info diagnosa), error.html, build.yml.
 Belum diverifikasi: build Kotlin dan perilaku di perangkat (tidak ada Kotlin/Android SDK di sesi ini).
 Keterbatasan: lihat laporan sesi (addDirect, DoH hanya JSON, nama LAN hanya lewat DNS sistem, trafik non-WebView memakai DNS sistem).
+
+## Sesi 6 (integrasi, pengujian, build final) - selesai sejauh lingkungan memungkinkan
+Lingkungan sesi: JRE 21 (tanpa javac; kompiler Java dipakai lewat javax.tools/jdk.compiler), Node + Playwright/Chromium. TIDAK ada Kotlin compiler, Gradle, Android SDK, dan jaringan keluar dimatikan -> build Kotlin/APK TIDAK bisa dijalankan.
+Dijalankan dan hasil aktual:
+- FilterEngineSelfTest 303 lulus/0 gagal; ReadingSelfTest 75/0; DohResolverSelfTest 209/0 (uji IPv4->IPv6 dilewati: loopback IPv6 tidak ada); UrlRulesSelfTest 35/0.
+- reading-flow.test.js (Chromium): 36 lulus/0 gagal setelah perbaikan tes di bawah.
+- Pemeriksaan kode statis (bukan kompilasi): kurung/kurawal seimbang di semua .kt; tanda tangan Java yang dipanggil dari Kotlin cocok (DohResolver, FilterEngine, PublicSuffix, UrlRules, ReadingPos); metode Bridge cocok dengan skrip JS (AdData, error.html); referensi R.* cocok dengan resource; aturan ProGuard mempertahankan @JavascriptInterface; onDestroy membersihkan autoScroller/saveHandler/popup/sheet/WebView/DnsProxy(owner).
+Perubahan di sesi ini (hanya tes, kode aplikasi tidak diubah):
+- reading-flow.test.js: (1) skrip PRELOAD_JS kini memakai placeholder __AHEAD__/__MAXI__ (sejak Sesi 5); tes sebelumnya menyuntikkan skrip mentah sehingga langsung error "__AHEAD__ is not defined". Tes kini mengganti placeholder seperti MainActivity.injectPreload (AHEAD=4, MAXI=2). (2) Asersi C2 "halaman tidak ditarik lagi" memakai scrollY, yang bergeser sendiri oleh scroll anchoring Chromium saat gambar lazy di atas membesar (terbukti: panggilan scrollTo tetap 3 setelah sentuhan; dengan overflow-anchor:none scrollY stabil). Kini asersi menghitung panggilan scrollTo. Perilaku RESTORE_JS tidak berubah.
+Belum diuji / sisa: lihat laporan akhir sesi (build Kotlin/APK, perangkat nyata, lint, WebView.onPause/onResume #3, resumeOrLoad redirect #4, kunci lama di riwayat git).
+
+## Sesi 6 - lanjutan (setelah log diagnosa 04-11)
+- MainActivity.kt: onPause() kini memanggil webView.onPause() (bila WebView belum mati) dan ditambah onResume() -> webView.onResume(). Menutup temuan #3. BELUM diuji (tidak ada kompiler/perangkat); uji di HP: video/suara berhenti saat app di latar, lanjut normal saat kembali.
+- AdData.kt: LISTS[0] diganti ke https://adguardteam.github.io/AdGuardSDNSFilter/Filters/filter.txt (tautan langsung resmi). URL raw.githubusercontent.com/.../master/Filters/filter.txt memberi "unduh gagal: HTTP 404" di setiap peluncuran pada log perangkat. URL baru BELUM diuji dari sini (jaringan mati); lihat log "diperbarui: list0.txt" setelah build baru.
+- Log diagnosa: SocketException di Socket.getInputStream (pool-4, terakhir 29-10) cocok dengan jalur lama DnsProxy; kode saat ini sudah mengambil getInputStream di dalam try (DnsProxy.handle) dan membungkus pool.execute. Belum terbukti hilang di perangkat: butuh build baru.
+
+## Sesi 6 - permintaan fitur (menu kanan + simpan situs) - BELUM dikompilasi/diuji
+- MenuSheet.kt: showMenuSheet kini deretan vertikal di pinggir kanan (bukan kisi 4 kolom di tengah); ketuk di luar = tutup; teks status (mis. "133 diblokir") hanya muncul bila ada.
+- MainActivity.showMenu(): urutan atas ke bawah = Perlindungan, Segarkan, Beranda, Situs, Pengaturan, lalu Gulir dan Penyesuaian warna (dua terakhir dipertahankan agar tetap bisa dibuka; tidak ada pintu lain ke keduanya).
+- Kartu Perlindungan: baris "Pengaturan lainnya" dihapus (Pengaturan kini di menu kanan). Baris GPC tetap membuka Pengaturan.
+- Sites.kt + MainActivity: dua tombol baru di sheet Situs: "Simpan halaman ini" (alamat halaman yang sedang dibuka, nama = judul halaman/host, tanpa duplikat) dan "Tulis alamat" (nama opsional + alamat, divalidasi dengan normalize(), hanya disimpan, tidak langsung dibuka). Menyentuh situs tersimpan = openSite() seperti sebelumnya (Beranda ikut menjadi alamat itu).
+- Pemeriksaan: kurung seimbang; tanda tangan showSitesSheet cocok dengan pemanggil. Tes Java tidak terkait.
+
+## Sesi 6 - pegangan setengah lonjong + 3 tombol bulat - BELUM dikompilasi/diuji
+- activity_main.xml: tombol menu bulat di kanan atas diganti pegangan setengah lonjong (52x76dp, menempel di tepi kanan, margin atas 100dp). Drawable baru: bg_fab_handle.xml, ic_chevron_left.xml.
+- QuickTools.kt (baru): diketuk -> 3 bulatan terpisah (Menu, Penyesuaian warna, Gulir) muncul di kiri pegangan; ketuk lagi / ketuk atau geser halaman = tertutup (ketukan halaman yang hanya menutup tidak ikut menyembunyikan pegangan).
+- FabController.kt: pegangan menyelinap ke kanan (bukan naik ke atas) saat disembunyikan; parameter baru onHide menutup 3 tombol.
+- MainActivity.kt: showMenu() kini 5 tombol (Perlindungan, Segarkan, Beranda, Situs, Pengaturan); Gulir dan Penyesuaian warna pindah ke 3 tombol bulat.
+- Pemeriksaan: XML valid, kurung seimbang. Belum ada render/uji layar. Ukuran/posisi (52x76dp, 100dp dari atas, bulatan 56dp) mudah diubah di activity_main.xml dan QuickTools.kt.
