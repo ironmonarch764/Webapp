@@ -21,7 +21,9 @@ fun showSitesSheet(
     current: String,
     onOpen: (String) -> Unit,
     onDelete: (String) -> Unit,
-    onNew: () -> Unit
+    onNew: () -> Unit,
+    onSaveCurrent: () -> Unit,
+    onAddManual: () -> Unit
 ) {
     val d = Dialog(a)
     d.requestWindowFeature(Window.FEATURE_NO_TITLE)
@@ -66,6 +68,22 @@ fun showSitesSheet(
         topMargin = px(12)
         bottomMargin = px(4)
     })
+
+    // Simpan alamat tanpa membukanya: halaman yang sedang dibuka, atau alamat yang ditulis sendiri
+    fun secondaryBtn(label: String, action: () -> Unit) = TextView(a).apply {
+        text = label
+        textSize = 14f
+        setTextColor(Color.parseColor("#BFD3FF"))
+        gravity = Gravity.CENTER
+        background = bg(Color.parseColor("#26324A"), px(16).toFloat(), false)
+        setPadding(px(6), px(12), px(6), px(12))
+        isClickable = true
+        setOnClickListener { d.dismiss(); action() }
+    }
+    val saveRow = LinearLayout(a).apply { orientation = LinearLayout.HORIZONTAL }
+    saveRow.addView(secondaryBtn("🔖 Simpan halaman ini", onSaveCurrent), LinearLayout.LayoutParams(0, wrap, 1f))
+    saveRow.addView(secondaryBtn("✎ Tulis alamat", onAddManual), LinearLayout.LayoutParams(0, wrap, 1f).apply { leftMargin = px(8) })
+    root.addView(saveRow, LinearLayout.LayoutParams(match, wrap).apply { topMargin = px(4); bottomMargin = px(4) })
 
     val box = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL }
     sites.forEach { s ->

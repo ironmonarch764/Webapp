@@ -17,7 +17,7 @@ val DEFAULT_AD_HOSTS = setOf(
 )
 
 val LISTS = listOf(
-    "https://raw.githubusercontent.com/AdguardTeam/AdGuardSDNSFilter/master/Filters/filter.txt",
+    "https://adguardteam.github.io/AdGuardSDNSFilter/Filters/filter.txt",
     "https://pgl.yoyo.org/adservers/serverlist.php?hostformat=nohtml&showintro=0&mimetype=plaintext",
     "https://easylist.to/easylist/easylist.txt",
     "https://raw.githubusercontent.com/ABPindo/indonesianadblockrules/master/subscriptions/abpindo.txt"

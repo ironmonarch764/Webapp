@@ -17,6 +17,7 @@ import android.webkit.*
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageButton
+import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
@@ -163,6 +164,8 @@ class MainActivity : AppCompatActivity() {
     private val autoScroller by lazy { AutoScroller(webView, prefs) }
     private val autoPanel by lazy { AutoScrollPanel(this, autoScroller, prefs) }
     private var fabCtl: FabController? = null
+    private var tools: QuickTools? = null
+    private var toolsWereOpen = false
     private fun onErrorPage(): Boolean = webView.url?.startsWith("file:") == true
 
     private fun newPickerToken(): String {
@@ -407,6 +410,13 @@ class MainActivity : AppCompatActivity() {
     LoginSupport.save()
     autoScroller.stop()
     saveReadingPosition()
+    // Hentikan pemrosesan tambahan WebView (video/audio/timer halaman) saat aplikasi tidak di layar
+    if (!webViewDead) webView.onPause()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (!webViewDead) webView.onResume()
     }
 
     // Simpan halaman + posisi scroll terakhir supaya aplikasi dibuka lagi di tempat yang sama.
@@ -508,8 +518,17 @@ class MainActivity : AppCompatActivity() {
         LoginSupport.setup(webView)
         webView.setBackgroundColor(Color.BLACK)
         progress = findViewById(R.id.progress)
-        findViewById<ImageButton>(R.id.menuBtn).setOnClickListener { showMenu() }
-        fabCtl = FabController(webView, findViewById<ImageButton>(R.id.menuBtn), { pickerActive }, { prefs.getBoolean("edge_on", true) }, { autoScroller.stop() }, { scheduleSave() })
+        // Pegangan setengah lonjong di tepi kanan: diketuk = 3 tombol bulat (Menu, Penyesuaian warna, Gulir)
+        val handle = findViewById<ImageButton>(R.id.menuBtn)
+        tools = QuickTools(handle, handle.parent as FrameLayout, { showMenu() }, { showColorFilterSheet(this, webView, prefs) }, { showScrollPopup() })
+        fabCtl = FabController(
+            webView, handle,
+            { pickerActive || toolsWereOpen },   // ketukan yang hanya menutup 3 tombol tidak ikut menyembunyikan pegangan
+            { prefs.getBoolean("edge_on", true) },
+            { autoScroller.stop(); toolsWereOpen = tools?.expanded == true; tools?.collapse() },
+            { scheduleSave() },
+            { tools?.collapse() }
+        )
 
         webView.settings.apply {
             javaScriptEnabled = true
@@ -1070,27 +1089,20 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
         listOf("cf_b", "cf_c", "cf_s", "cf_w").any { prefs.getInt(it, 50) != 50 } ||
             prefs.getInt("fx_sm", 0) != 0 || prefs.getInt("fx_sh", 0) != 0
 
-    // Menu cepat (kartu di tengah layar): hanya aksi yang sering dipakai. Sisanya ada di Pengaturan.
+    // Menu cepat (deretan di kanan): Perlindungan, Segarkan, Beranda, Situs, Pengaturan. Gulir dan Penyesuaian warna ada di 3 tombol bulat (QuickTools).
     private fun showMenu() {
         autoScroller.stop()   // halaman tidak boleh terus bergerak di belakang menu
         val host = Uri.parse(webView.url ?: currentUrl).host?.removePrefix("www.")
-        val edgeOn = prefs.getBoolean("edge_on", true)
-        val scrollParts = ArrayList<String>()
-        if (autoPanel.modeOn) scrollParts.add("Otomatis")
-        if (edgeOn) scrollParts.add("Tepi")
         val adOn = adBlockOn()
-        val colorOn = colorFilterActive()
         showMenuSheet(
             this,
             if (host.isNullOrEmpty()) "Menu" else host,
             listOf(
+                MenuAction("🛡️", "Perlindungan", adOn || trackerBlockOn(),
+                    if (adOn || trackerBlockOn()) (adBlocked.get() + trackerBlocked.get()).toString() + " diblokir" else "OFF") { showProtection() },
                 MenuAction("🔄", "Segarkan") { if (onErrorPage()) retryFailed() else webView.reload() },
                 MenuAction("🏠", "Beranda") { load() },
                 MenuAction("🔖", "Situs") { showSites() },
-                MenuAction("🛡️", "Perlindungan", adOn || trackerBlockOn(),
-                    if (adOn || trackerBlockOn()) (adBlocked.get() + trackerBlocked.get()).toString() + " diblokir" else "OFF") { showProtection() },
-                MenuAction("⏬", "Gulir", autoPanel.modeOn || edgeOn, if (scrollParts.isEmpty()) "OFF" else scrollParts.joinToString(" + ")) { showScrollPopup() },
-                MenuAction("🎨", "Penyesuaian warna", colorOn, if (colorOn) "Kustom" else "Normal") { showColorFilterSheet(this, webView, prefs) },
                 MenuAction("⚙️", "Pengaturan") { showSettings() }
             )
         )
@@ -1140,11 +1152,7 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
                     },
                     SettingRow.Value("🔒", "Koneksi", "",
                         if (cur.startsWith("https://")) "HTTPS" else if (cur.startsWith("http://")) "HTTP (tidak aman)" else "-",
-                        if (cur.startsWith("https://")) 1 else if (cur.startsWith("http://")) -1 else 0, null),
-                    SettingRow.Action("⚙️", "Pengaturan lainnya", "Privasi lanjutan, DNS, akun") {
-                        dismissMenuSheet()
-                        showSettings()
-                    }
+                        if (cur.startsWith("https://")) 1 else if (cur.startsWith("http://")) -1 else 0, null)
                 ))
             )
         }
@@ -1519,8 +1527,76 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
             currentUrl,
             { url -> openSite(url) },
             { url -> storeSites(loadSites().filter { it.second != url }) },
-            { askUrl(cancelable = true) }
+            { askUrl(cancelable = true) },
+            { saveCurrentPage() },
+            { addSiteManually() }
         )
+    }
+
+    // Simpan alamat halaman yang sedang dibuka (bukan hanya alamat awal) ke daftar Situs
+    private fun saveCurrentPage() {
+        val u = if (webViewDead) null else webView.url
+        if (u == null || !(u.startsWith("http://") || u.startsWith("https://"))) {
+            Toast.makeText(this, "Tidak ada halaman web yang sedang dibuka", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val list = loadSites()
+        if (list.any { it.second == u }) {
+            Toast.makeText(this, "Alamat ini sudah tersimpan", Toast.LENGTH_SHORT).show()
+        } else {
+            val title = webView.title?.trim().orEmpty()
+            val name = if (title.isNotEmpty()) title.take(40) else (Uri.parse(u).host?.removePrefix("www.") ?: u)
+            list.add(name to u)
+            storeSites(list)
+            Toast.makeText(this, "Alamat tersimpan", Toast.LENGTH_SHORT).show()
+        }
+        showSites()
+    }
+
+    // Tulis alamat (dan nama, opsional) sendiri; hanya disimpan ke daftar, tidak langsung dibuka
+    private fun addSiteManually() {
+        val dp = resources.displayMetrics.density
+        val nameIn = EditText(this).apply {
+            hint = "Nama (boleh kosong)"
+            inputType = InputType.TYPE_CLASS_TEXT
+            maxLines = 1
+        }
+        val urlIn = EditText(this).apply {
+            hint = "Alamat, contoh: komiku.org/baca/abc"
+            inputType = InputType.TYPE_TEXT_VARIATION_URI
+            maxLines = 1
+        }
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            val m = (20 * dp).toInt()
+            setPadding(m, m / 2, m, 0)
+            addView(nameIn)
+            addView(urlIn)
+        }
+        val dlg = AlertDialog.Builder(this)
+            .setTitle("Simpan alamat")
+            .setView(box)
+            .setPositiveButton("Simpan", null)
+            .setNegativeButton("Batal", null)
+            .create()
+        dlg.setOnShowListener {
+            dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val url = normalize(urlIn.text.toString())
+                if (url == null) {
+                    urlIn.error = "Alamat tidak valid"
+                } else {
+                    val list = loadSites()
+                    val name = nameIn.text.toString().trim().take(40).ifEmpty { Uri.parse(url).host?.removePrefix("www.") ?: url }
+                    val idx = list.indexOfFirst { it.second == url }
+                    if (idx >= 0) list[idx] = name to url else list.add(name to url)
+                    storeSites(list)
+                    Toast.makeText(this, "Alamat tersimpan", Toast.LENGTH_SHORT).show()
+                    dlg.dismiss()
+                    showSites()
+                }
+            }
+        }
+        dlg.show()
     }
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)

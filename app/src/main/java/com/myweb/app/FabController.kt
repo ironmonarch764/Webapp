@@ -25,7 +25,8 @@ class FabController(
     private val isBusy: () -> Boolean,
     private val edgeOn: () -> Boolean,
     private val onTouchDown: () -> Unit,
-    private val onScroll: () -> Unit = {}
+    private val onScroll: () -> Unit = {},
+    private val onHide: () -> Unit = {}
 ) {
     // ---- Pengaturan (ubah angkanya sesuai selera) ----
     private val COOLDOWN_MS = 700L      // jeda tombol menu, milidetik
@@ -76,12 +77,14 @@ class FabController(
         lockUntil = SystemClock.uptimeMillis() + COOLDOWN_MS
         shown = show
 
-        val dist = -80 * webView.resources.displayMetrics.density
+        // pegangan setengah lonjong menyelinap ke tepi kanan layar saat disembunyikan
+        val dist = (if (fab.width > 0) fab.width else (52 * webView.resources.displayMetrics.density).toInt()).toFloat()
         if (show) {
             fab.visibility = View.VISIBLE
-            fab.animate().alpha(1f).translationY(0f).setDuration(180).start()
+            fab.animate().alpha(1f).translationX(0f).setDuration(180).start()
         } else {
-            fab.animate().alpha(0f).translationY(dist).setDuration(180)
+            onHide()
+            fab.animate().alpha(0f).translationX(dist).setDuration(180)
                 .withEndAction { if (!shown) fab.visibility = View.INVISIBLE }
                 .start()
         }
