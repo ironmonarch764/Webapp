@@ -13,7 +13,10 @@ function konst(name) {
   if (!m) throw new Error('konstanta tidak ditemukan: ' + name);
   return m[1];
 }
-const PRELOAD = konst('PRELOAD_JS');
+// MainActivity.injectPreload() mengganti __AHEAD__ dan __MAXI__ sebelum menyuntikkan skrip; uji meniru itu
+// (nilai bawaan uji: AHEAD=4, unduhan bersamaan=2).
+const preloadJs = (ahead = 4, maxi = 2) => konst('PRELOAD_JS').replace(/__AHEAD__/g, String(ahead)).replace(/__MAXI__/g, String(maxi));
+const PRELOAD = preloadJs();
 const RESTORE = konst('RESTORE_JS');
 const SAVE = konst('SAVE_POS_JS');
 const restoreJs = (y, budget) => RESTORE.replace('__Y__', String(y)).replace('__BUDGET__', String(budget));
@@ -212,16 +215,20 @@ async function main() {
   await p.close();
 
   // C2: sentuhan pengguna membatalkan pemulihan
+  // Catatan: posisi (scrollY) tidak dipakai sebagai ukuran, karena scroll anchoring Chromium menggeser scrollY sendiri
+  // saat gambar lazy di atas viewport membesar. Yang diperiksa: skrip tidak memanggil scroll lagi setelah disentuh.
   reset({ delay: 100 });
   p = await ctx.newPage();
   await p.goto(base + '/lazy', { waitUntil: 'load' });
+  await p.evaluate(() => { window.__scrollCalls = 0; const o = window.scrollTo; window.scrollTo = function () { window.__scrollCalls++; return o.apply(this, arguments); }; });
   await p.evaluate(restoreJs(9000, 12000));
   await sleep(450);
   await p.evaluate(() => document.dispatchEvent(new Event('touchstart', { bubbles: true })));
-  const yAtTouch = await scrollY(p);
+  const callsAtTouch = await p.evaluate(() => window.__scrollCalls);
   await sleep(2500);
   check('setelah disentuh: pemulihan berhenti (flag mati)', await p.evaluate(() => !window.__rsActive));
-  check('setelah disentuh: halaman tidak ditarik lagi (y ' + yAtTouch + ' -> ' + (await scrollY(p)) + ')', Math.abs((await scrollY(p)) - yAtTouch) <= 2);
+  const callsAfter = await p.evaluate(() => window.__scrollCalls);
+  check('setelah disentuh: skrip tidak memanggil scroll lagi (' + callsAtTouch + ' -> ' + callsAfter + ')', callsAfter === callsAtTouch);
   await p.close();
 
   // C3: posisi mustahil (halaman lebih pendek) -> batas waktu, kembali ke posisi awal, tidak berulang
