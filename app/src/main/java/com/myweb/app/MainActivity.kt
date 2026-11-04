@@ -519,7 +519,7 @@ class MainActivity : AppCompatActivity() {
         // Tiga tombol setengah lonjong di tepi kanan: Menu, Penyesuaian warna, Gulir
         val sideTools = findViewById<LinearLayout>(R.id.menuBtn)
         QuickTools(sideTools, { showMenu() }, { showColorFilterSheet(this, webView, prefs) }, { showScrollPopup() })
-        fabCtl = FabController(webView, sideTools, { pickerActive }, { prefs.getBoolean("edge_on", true) }, { autoScroller.stop() }, { scheduleSave() })
+        fabCtl = FabController(webView, sideTools, { pickerActive }, { prefs.getBoolean("edge_on", true) }, { autoScroller.stop() }, { scheduleSave() }, { edgeSpeed() }, { edgeFraction() })
 
         webView.settings.apply {
             javaScriptEnabled = true
@@ -1151,16 +1151,37 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
 
     // Gulir otomatis dan gulir ketuk-tepi: satu menu, tetapi saklar on/off-nya terpisah
     private fun showScrollPopup() {
-        showPopupCard(this, "Gulir", listOf(
+        showPopupCard(this, "Gulir", listOf<SettingRow>(
             SettingRow.Toggle("⏬", "Gulir otomatis", "Halaman bergulir sendiri; panel kecepatan muncul di layar", autoPanel.modeOn) { on ->
                 if (on != autoPanel.modeOn) autoPanel.toggle()
                 if (on) dismissMenuSheet()
             },
-            SettingRow.Toggle("👆", "Gulir ketuk-tepi", "Ketuk tepi layar untuk menggulir halaman", prefs.getBoolean("edge_on", true)) { on ->
-                prefs.edit().putBoolean("edge_on", on).apply()
-            }
-        ))
+        ) + edgeScrollRows())
     }
+
+    // ---------- Gulir ketuk-tepi: saklar, kecepatan, dan jarak mendarat ----------
+    // Kecepatan level 1..10 = px CSS per milidetik (level 5 = 2,0 = bawaan). Mendarat 3..10 = 30%..100% tinggi layar per ketukan (9 = 90%).
+    private val edgeSpeeds = floatArrayOf(0.6f, 0.9f, 1.2f, 1.6f, 2.0f, 2.5f, 3.0f, 3.8f, 4.8f, 6.0f)
+    private fun edgeSpeedLevel() = prefs.getInt("edge_speed", 5).coerceIn(1, 10)
+    private fun edgeSpeed() = edgeSpeeds[edgeSpeedLevel() - 1]
+    private fun edgeLandLevel() = prefs.getInt("edge_land", 9).coerceIn(3, 10)
+    private fun edgeFraction() = edgeLandLevel() / 10f
+
+    private fun edgeScrollRows(): List<SettingRow> = listOf(
+        SettingRow.Toggle("👆", "Gulir ketuk-tepi", "Ketuk tepi layar untuk menggulir halaman", prefs.getBoolean("edge_on", true)) { on ->
+            prefs.edit().putBoolean("edge_on", on).apply()
+        },
+        SettingRow.Level(
+            "🏎️", "Kecepatan gulir ketuk-tepi", "Seberapa cepat halaman bergeser saat tepi diketuk (tetap, tidak melambat)",
+            1, 10, edgeSpeedLevel(),
+            { v -> v.toString() + " / 10" }
+        ) { v -> prefs.edit().putInt("edge_speed", v).apply() },
+        SettingRow.Level(
+            "🎯", "Mendarat (jarak per ketukan)", "Sejauh apa halaman turun/naik tiap ketukan; kurang dari 100% menyisakan bagian yang tumpang tindih",
+            3, 10, edgeLandLevel(),
+            { v -> (v * 10).toString() + "% layar" }
+        ) { v -> prefs.edit().putInt("edge_land", v).apply() }
+    )
 
     // ---------- Elemen yang disembunyikan pengguna (per situs) ----------
     // Disimpan sebagai selector CSS, satu per baris, di prefs "blk:<domain>".
@@ -1242,10 +1263,7 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
                         prefs.edit().putInt("preload_parallel", v).apply()
                         if (preloadOn()) injectPreload(webView)
                     },
-                    SettingRow.Toggle("👆", "Gulir ketuk-tepi", "Ketuk tepi layar untuk menggulir halaman", prefs.getBoolean("edge_on", true)) { on ->
-                        prefs.edit().putBoolean("edge_on", on).apply()
-                    }
-                )),
+                ) + edgeScrollRows()),
                 SettingSection("Privasi dan pemblokiran", listOf(
                     SettingRow.Toggle("🛡️", "Pemblokir iklan", "Saklar utama: blokir iklan, pelacak, dan jendela iklan", adBlockOn()) { on ->
                         setAdBlock(on)

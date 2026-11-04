@@ -24,7 +24,9 @@ class FabController(
     private val isBusy: () -> Boolean,
     private val edgeOn: () -> Boolean,
     private val onTouchDown: () -> Unit,
-    private val onScroll: () -> Unit = {}
+    private val onScroll: () -> Unit = {},
+    private val edgeSpeed: () -> Float = { 2.0f },     // px CSS per milidetik (diatur di Pengaturan > Gulir)
+    private val edgeFraction: () -> Float = { 0.9f }   // jarak satu ketukan = bagian tinggi layar (diatur di Pengaturan > Gulir)
 ) {
     // ---- Pengaturan (ubah angkanya sesuai selera) ----
     private val COOLDOWN_MS = 700L      // jeda tombol menu, milidetik
@@ -33,7 +35,6 @@ class FabController(
     private val SIDE_BOTTOM = 0.15f     // area samping berakhir 15% sebelum dasar (sisakan bar bawah situs)
     private val RIGHT_DIR = 1           // ketuk tepi kanan: 1 = turun, -1 = naik
     private val LEFT_DIR = 1           // ketuk tepi kiri: -1 = naik, 1 = turun (isi 1 agar dua sisi turun)
-    private val PAGE_FRACTION = 0.9f    // satu ketukan = 90% tinggi layar (sisakan 10% agar nyambung)
     private val TOP_EDGE_DP = 40f       // tarikan dianggap dari tepi atas bila mulai di 40dp teratas
     private val PULL_DP = 30f           // minimal geser ke bawah agar dianggap menarik bar
     private val REVEAL_MS = 4000L       // lama tombol menu bertahan setelah bar ditarik
@@ -96,10 +97,12 @@ class FabController(
         handler.postDelayed(restore, REVEAL_MS)
     }
 
-    // dir = 1 turun, -1 naik. Pakai animasi scroll halus bawaan browser.
+    // dir = 1 turun, -1 naik. Kecepatan konstan (lihat EDGE_SCROLL_JS), bukan animasi 'smooth' bawaan browser
     private fun scrollPage(dir: Int) {
-        val js = "(function(){var d=window.innerHeight*" + PAGE_FRACTION + "*" + dir +
-            ";window.scrollBy({top:d,left:0,behavior:'smooth'});})();"
+        val js = EDGE_SCROLL_JS
+            .replace("__DIR__", dir.toString())
+            .replace("__FRAC__", edgeFraction().toString())
+            .replace("__SPEED__", edgeSpeed().toString())
         webView.evaluateJavascript(js, null)
     }
 
