@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.view.Choreographer
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
@@ -27,7 +28,7 @@ class FabController(
     private val edgeOn: () -> Boolean,
     private val onTouchDown: () -> Unit,
     private val onScroll: () -> Unit = {},
-    private val edgeSpeed: () -> Float = { 2.0f },     // px CSS per milidetik (diatur di Pengaturan > Gulir)
+    private val edgeSpeed: () -> Float = { 2.0f },     // dp per milidetik (diatur di Pengaturan > Gulir)
     private val edgeFraction: () -> Float = { 0.9f }   // jarak satu ketukan = bagian tinggi layar (diatur di Pengaturan > Gulir)
 ) {
     // ---- Pengaturan (ubah angkanya sesuai selera) ----
@@ -43,6 +44,7 @@ class FabController(
     private val REVEAL_MS = 4000L       // lama tombol menu bertahan setelah bar ditarik
     // --------------------------------------------------
 
+    private val edgeScroller = EdgeScroller(webView)
     private var shown = true
     private var lockUntil = 0L
     private var lastTouch = 0L
@@ -65,7 +67,10 @@ class FabController(
     fun onSystemBars(visible: Boolean) {}
 
     // Dipanggil saat Activity dihancurkan supaya runnable tertunda tidak menahan view/Activity
-    fun release() { handler.removeCallbacksAndMessages(null) }
+    fun release() {
+        handler.removeCallbacksAndMessages(null)
+        edgeScroller.cancel()
+    }
 
     // Ketukan/scroll biasa: tunduk pada jeda
     private fun setShown(show: Boolean) {
@@ -142,25 +147,23 @@ class FabController(
         handler.postDelayed(restore, REVEAL_MS)
     }
 
-    // dir = 1 turun, -1 naik. Kecepatan konstan (lihat EDGE_SCROLL_JS), bukan animasi 'smooth' bawaan browser
+    // dir = 1 turun, -1 naik. Digerakkan native per frame (Choreographer + scrollBy) dengan kecepatan konstan,
+    // sama seperti auto-scroll, jadi tidak tersendat oleh JavaScript halaman dan tidak pelan-cepat-pelan.
     private fun scrollPage(dir: Int) {
-        val js = EDGE_SCROLL_JS
-            .replace("__DIR__", dir.toString())
-            .replace("__FRAC__", edgeFraction().toString())
-            .replace("__SPEED__", edgeSpeed().toString())
-        webView.evaluateJavascript(js, null)
+        edgeScroller.scroll(dir, edgeFraction(), edgeSpeed())
+    }
+
+    // Titik (x, y) berada di area ketuk-tepi?
+    private fun inEdgeZone(x: Float, y: Float, w: Int, h: Int): Boolean {
+        if (!edgeOn() || SIDE_ZONE <= 0f) return false
+        val inBand = y > h * SIDE_TOP && y < h * (1f - SIDE_BOTTOM)
+        return inBand && (x > w * (1f - SIDE_ZONE) || x < w * SIDE_ZONE)
     }
 
     @SuppressLint("ClickableViewAccessibility")
     private fun attach() {
-        val slop = ViewConfiguration.get(webView.context).scaledTouchSlop
-        val density = webView.resources.displayMetrics.density
-        var downX = 0f
-        var downY = 0f
-        var downT = 0L
-        var multi = false
-        var topDown = false
-
+        // Pada ketukan beruntun di tepi, gulir yang sedang jalan dilanjutkan (jarak ditambah), bukan dibatalkan
+        // (batal hanya bila sentuhan jatuh di luar zona tepi, jari menyeret, atau multi-sentuh)
         // Scroll ke arah mana pun = tutup tombol (hanya jika sedang disentuh/baru disentuh,
         // dan tidak sedang masa tombol ditampilkan karena bar ditarik)
         webView.setOnScrollChangeListener { _, _, scrollY, _, oldY ->
@@ -176,6 +179,7 @@ class FabController(
             when (e.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     onTouchDown()
+                    if (!inEdgeZone(e.x, e.y, v.width, v.height)) edgeScroller.cancel()
                     downX = e.x
                     downY = e.y
                     downT = e.eventTime
@@ -184,9 +188,12 @@ class FabController(
                 }
                 MotionEvent.ACTION_POINTER_DOWN -> {
                     multi = true
+                    edgeScroller.cancel()
                     topDown = false
                 }
                 MotionEvent.ACTION_MOVE -> {
+                    // jari menyeret = pengguna menggulir sendiri: hentikan gulir ketuk-tepi
+                    if (abs(e.x - downX) > slop || abs(e.y - downY) > slop) edgeScroller.cancel()
                     if (topDown && e.y - downY > PULL_DP * density) {
                         topDown = false
                         reveal()
@@ -228,6 +235,46 @@ class FabController(
                 }
             }
             consumed
+        }
+    }
+}
+
+// Menggerakkan halaman tiap frame layar (Choreographer + WebView.scrollBy), sama seperti AutoScroller.
+// Jarak satu ketukan = fraction x tinggi layar; kecepatan = speedDpPerMs x kepadatan layar. Berhenti di ujung halaman.
+class EdgeScroller(private val webView: WebView) {
+    private val math = AutoScrollMath.Edge()
+    private var running = false
+
+    private val callback = object : Choreographer.FrameCallback {
+        override fun doFrame(frameTimeNanos: Long) {
+            if (!math.active()) { running = false; return }
+            val move = math.step(frameTimeNanos)
+            if (move != 0) {
+                if (!webView.canScrollVertically(if (move > 0) 1 else -1)) {
+                    math.cancel()
+                    running = false
+                    return
+                }
+                webView.scrollBy(0, move)
+            }
+            if (math.active()) Choreographer.getInstance().postFrameCallback(this) else running = false
+        }
+    }
+
+    fun scroll(dir: Int, fraction: Float, speedDpPerMs: Float) {
+        val dp = webView.resources.displayMetrics.density.toDouble()
+        math.begin(dir, webView.height * fraction.toDouble(), speedDpPerMs * dp)
+        if (!running) {
+            running = true
+            Choreographer.getInstance().postFrameCallback(callback)
+        }
+    }
+
+    fun cancel() {
+        math.cancel()
+        if (running) {
+            Choreographer.getInstance().removeFrameCallback(callback)
+            running = false
         }
     }
 }

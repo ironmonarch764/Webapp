@@ -1236,11 +1236,13 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
             }
             if (others > 0) parts.add(others.toString() + " situs")
             listOf(
-                SettingSection("Akun", listOf(
-                    SettingRow.Action("@akun", "Akun dan sesi masuk",
-                        if (parts.isEmpty()) "Belum ada sesi masuk terdeteksi" else parts.joinToString(" · ")) {
-                        showAccounts()
-                    }
+                SettingSection("Anda dan Google", listOf(
+                    SettingRow.Profile(
+                        if (googleName.isNotEmpty()) googleName else if (g != null && g.session) "Akun Google" else "Belum masuk",
+                        if (parts.isEmpty()) "Ketuk untuk melihat akun dan situs" else parts.joinToString(" · "),
+                        googleAvatar,
+                        (if (googleName.isNotEmpty()) googleName else googleEmails.firstOrNull() ?: "G").take(1).uppercase()
+                    ) { showAccountMenu() }
                 )),
                 SettingSection("Tampilan dan membaca", listOf(
                     SettingRow.Toggle("@tarik", "Tarik untuk menyegarkan", "Tarik halaman ke bawah dari bagian atas untuk memuat ulang", prefs.getBoolean("pull_refresh", true)) { on ->
@@ -1374,11 +1376,24 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
     }
 
     @Volatile private var googleEmails: List<String> = emptyList()
+    @Volatile private var googleName: String = ""
+    @Volatile private var googleAvatar: android.graphics.Bitmap? = null
     @Volatile private var googleFetching = false
     @Volatile private var googleFetchAt = 0L
 
-    // Alamat email akun Google yang sedang masuk (hanya di memori, tidak disimpan). Memakai cookie sesi aplikasi sendiri;
-    // bila gagal/format berubah, daftar tetap kosong dan akun hanya ditampilkan sebagai "sesi aktif".
+    private fun clearGoogleProfile() {
+        googleEmails = emptyList()
+        googleName = ""
+        googleAvatar = null
+    }
+
+    // Isi teks JSON -> teks biasa (\uXXXX, \/, \")
+    private fun unJson(s: String): String =
+        Regex("\\\\u([0-9a-fA-F]{4})").replace(s) { it.groupValues[1].toInt(16).toChar().toString() }
+            .replace("\\/", "/").replace("\\\"", "\"").replace("\\\\", "\\")
+
+    // Profil akun Google yang sedang masuk (email, nama, foto): hanya di memori, tidak disimpan. Memakai cookie sesi aplikasi
+    // sendiri; bila gagal/format berubah, tampilan akun kembali ke "sesi aktif" saja. Hasil (tanpa data pribadi) dicatat di log diagnosa.
     private fun refreshGoogleEmails() {
         val now = System.currentTimeMillis()
         if (googleFetching || now - googleFetchAt < 60000) return   // jangan menembak server berulang kali
@@ -1386,8 +1401,12 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
         googleFetching = true
         val cookie = CookieManager.getInstance().getCookie("https://accounts.google.com/") ?: ""
         val ua = webView.settings.userAgentString
+        val appCtx = applicationContext
         thread {
-            var found: List<String> = emptyList()
+            var emails: List<String> = emptyList()
+            var name = ""
+            var avatar: android.graphics.Bitmap? = null
+            var code = -1
             try {
                 val c = java.net.URL("https://accounts.google.com/ListAccounts?gpsia=1&source=ChromiumBrowser&json=standard")
                     .openConnection() as java.net.HttpURLConnection
@@ -1396,23 +1415,94 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
                 c.instanceFollowRedirects = false
                 c.setRequestProperty("Cookie", cookie)
                 c.setRequestProperty("User-Agent", ua)
-                if (c.responseCode == 200) {
-                    val buf = CharArray(20000)
-                    val n = c.inputStream.bufferedReader().use { it.read(buf) }
-                    val body = if (n > 0) String(buf, 0, n) else ""
-                    found = Regex("[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}").findAll(body).map { it.value }.distinct().take(5).toList()
+                code = c.responseCode
+                if (code == 200) {
+                    val body = c.inputStream.bufferedReader().use { it.readText().take(60000) }
+                    emails = Regex("[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}").findAll(body).map { it.value }.distinct().take(5).toList()
+                    // akun pertama: ["gaia.l.a",1,"Nama","email","foto",...
+                    val m = Regex("\\[\"gaia\\.l\\.a\",\\s*\\d+,\\s*(\"(?:[^\"\\\\]|\\\\.)*\"|null),\\s*\"((?:[^\"\\\\]|\\\\.)*)\",\\s*(\"(?:[^\"\\\\]|\\\\.)*\"|null)")
+                        .find(body)
+                    if (m != null) {
+                        name = if (m.groupValues[1] == "null") "" else unJson(m.groupValues[1].trim('"'))
+                        val mail = unJson(m.groupValues[2])
+                        if (mail.contains("@")) emails = listOf(mail) + emails.filter { it != mail }
+                        var photo = if (m.groupValues[3] == "null") "" else unJson(m.groupValues[3].trim('"'))
+                        if (photo.startsWith("//")) photo = "https:" + photo
+                        if (photo.startsWith("https://")) {
+                            photo = photo.replace(Regex("=s\\d+(-[a-z0-9-]+)?$"), "=s160-c")
+                            val pc = java.net.URL(photo).openConnection() as java.net.HttpURLConnection
+                            pc.connectTimeout = 5000
+                            pc.readTimeout = 5000
+                            if (pc.responseCode == 200) {
+                                val bytes = pc.inputStream.use { it.readBytes() }
+                                if (bytes.size in 1..600000) {
+                                    val raw = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                                    if (raw != null) avatar = circleBitmap(raw, 168)
+                                }
+                            }
+                            pc.disconnect()
+                        }
+                    }
                 }
                 c.disconnect()
             } catch (e: Exception) {
             }
+            logEvent(appCtx, "profil Google: HTTP " + code + ", email=" + (if (emails.isNotEmpty()) "ya" else "tidak") +
+                ", nama=" + (if (name.isNotEmpty()) "ya" else "tidak") + ", foto=" + (if (avatar != null) "ya" else "tidak"))
             googleFetching = false
             runOnUiThread {
-                if (!isDestroyed && found != googleEmails) {
-                    googleEmails = found
+                if (!isDestroyed && (emails != googleEmails || name != googleName || avatar != null)) {
+                    googleEmails = emails
+                    googleName = name
+                    googleAvatar = avatar
                     refreshSettingsSheet()
                 }
             }
         }
+    }
+
+    // Ketuk kartu profil: pilihan masuk/tambah akun, keluar (hapus akun), atau daftar semua sesi situs
+    private fun showAccountMenu() {
+        val g = accountInfos().firstOrNull { it.site == "google.com" }
+        val signed = g != null && g.session
+        if (signed && googleEmails.isEmpty()) refreshGoogleEmails()
+        val labels = ArrayList<String>()
+        val acts = ArrayList<() -> Unit>()
+        labels.add(if (signed) "Masuk / tambah akun Google" else "Masuk ke Google")
+        acts.add { startGoogleLogin(signed) }
+        if (g != null && signed) {
+            labels.add("Keluar (hapus akun dari aplikasi)")
+            acts.add { confirmGoogleSignOut(g) }
+        }
+        labels.add("Semua sesi situs…")
+        acts.add { showAccounts() }
+        AlertDialog.Builder(this)
+            .setTitle(
+                if (!signed) "Akun Google"
+                else "Akun Google\n" + (if (googleEmails.isNotEmpty()) googleEmails.joinToString("\n") else "Sesi masuk aktif")
+            )
+            .setItems(labels.toTypedArray()) { _, i -> acts[i]() }
+            .setNegativeButton("Tutup", null)
+            .show()
+    }
+
+    // Masuk = membuka halaman login Google di aplikasi ini; akun yang berhasil masuk tersimpan sebagai sesi (cookie) aplikasi
+    private fun startGoogleLogin(addAnother: Boolean) {
+        clearGoogleProfile()      // profil dibaca ulang saat Pengaturan dibuka lagi setelah masuk
+        googleFetchAt = 0L
+        dismissSettingsSheet()
+        Toast.makeText(this, "Masuk di halaman ini. Setelah selesai, buka Pengaturan lagi.", Toast.LENGTH_LONG).show()
+        webView.loadUrl(if (addAnother) "https://accounts.google.com/AddSession" else "https://accounts.google.com/")
+    }
+
+    // Keluar = semua cookie Google dihapus dari aplikasi, sehingga akun hilang dari aplikasi
+    private fun confirmGoogleSignOut(info: AccountInfo) {
+        AlertDialog.Builder(this)
+            .setTitle("Keluar dari akun Google?")
+            .setMessage("Akun Google dihapus dari aplikasi ini. Situs lain yang masuk lewat Google bisa ikut keluar. Akun Anda di Google sendiri tidak dihapus.")
+            .setPositiveButton("Keluar") { _, _ -> signOutSite(info) }
+            .setNegativeButton("Batal", null)
+            .show()
     }
 
     private fun showAccounts() {
@@ -1466,7 +1556,7 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
             }
         }
         cm.flush()
-        if (info.site == "google.com") googleEmails = emptyList()
+        if (info.site == "google.com") clearGoogleProfile()
         val left = (cm.getCookie(info.url) ?: "").split(";").count { it.isNotBlank() }
         Toast.makeText(this,
             if (left == 0) "Sudah keluar dari " + info.site else "Sebagian cookie " + info.site + " masih tersisa",
@@ -1481,7 +1571,7 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
             .setTitle("Keluar dari semua situs?")
             .setMessage("Semua cookie di aplikasi dihapus. Anda perlu masuk lagi di setiap situs.")
             .setPositiveButton("Keluar semua") { _, _ ->
-                googleEmails = emptyList()
+                clearGoogleProfile()
                 CookieManager.getInstance().removeAllCookies { _ ->
                     LoginSupport.save()
                     runOnUiThread {

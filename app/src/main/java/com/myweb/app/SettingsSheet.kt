@@ -12,6 +12,13 @@ import android.view.Window
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.SeekBar
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.PorterDuff
+import android.graphics.PorterDuffXfermode
+import android.graphics.Rect
+import android.widget.ImageView
 import android.widget.Switch
 import android.widget.TextView
 
@@ -26,6 +33,10 @@ sealed class SettingRow(val icon: String, val title: String, val subtitle: Strin
     // Baris informasi: nilai di kanan (tone 1 = baik/hijau, -1 = buruk/merah, 0 = netral); ketuk bila onClick ada
     class Value(icon: String, title: String, subtitle: String, val value: String, val tone: Int, val onClick: (() -> Unit)?) :
         SettingRow(icon, title, subtitle)
+
+    // Kartu profil bergaya Chrome: foto bulat (atau huruf awal bila belum ada), nama, dan keterangan di bawahnya. Ketuk = onClick
+    class Profile(val name: String, val detail: String, val avatar: Bitmap?, val initial: String, val onClick: () -> Unit) :
+        SettingRow("", name, detail)
 
     // Slider bilangan bulat min..max; format() menghasilkan teks nilai; onChange dipanggil saat jari dilepas
     class Level(
@@ -153,6 +164,7 @@ fun showSettingsSheet(a: Activity, title: String, build: () -> List<SettingSecti
 }
 
 internal fun buildRow(a: Activity, row: SettingRow, px: (Int) -> Int, rerender: () -> Unit): View {
+    if (row is SettingRow.Profile) return buildProfileRow(a, row, px)
     val match = ViewGroup.LayoutParams.MATCH_PARENT
     val wrap = ViewGroup.LayoutParams.WRAP_CONTENT
 
@@ -220,6 +232,7 @@ internal fun buildRow(a: Activity, row: SettingRow, px: (Int) -> Int, rerender: 
                 box.setOnClickListener { oc() }
             }
         }
+        is SettingRow.Profile -> { }   // sudah ditangani di atas
         is SettingRow.Level -> {
             val valueTv = TextView(a).apply {
                 text = row.format(row.value)
@@ -248,5 +261,64 @@ internal fun buildRow(a: Activity, row: SettingRow, px: (Int) -> Int, rerender: 
         }
         box.addView(sb, LinearLayout.LayoutParams(match, wrap).apply { topMargin = px(6) })
     }
+    return box
+}
+
+// Potong bitmap jadi lingkaran (pusat, persegi terbesar)
+internal fun circleBitmap(src: Bitmap, size: Int): Bitmap {
+    val out = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+    val c = Canvas(out)
+    val p = Paint(Paint.ANTI_ALIAS_FLAG)
+    c.drawCircle(size / 2f, size / 2f, size / 2f, p)
+    p.xfermode = PorterDuffXfermode(PorterDuff.Mode.SRC_IN)
+    val s = minOf(src.width, src.height)
+    val from = Rect((src.width - s) / 2, (src.height - s) / 2, (src.width + s) / 2, (src.height + s) / 2)
+    c.drawBitmap(src, from, Rect(0, 0, size, size), p)
+    return out
+}
+
+private fun buildProfileRow(a: Activity, row: SettingRow.Profile, px: (Int) -> Int): View {
+    val wrap = ViewGroup.LayoutParams.WRAP_CONTENT
+    val box = LinearLayout(a).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        setPadding(px(16), px(16), px(16), px(16))
+        isClickable = true
+        setOnClickListener { row.onClick() }
+    }
+    val size = px(56)
+    val avatar: View = if (row.avatar != null) {
+        ImageView(a).apply {
+            setImageBitmap(row.avatar)
+            scaleType = ImageView.ScaleType.CENTER_CROP
+        }
+    } else {
+        TextView(a).apply {
+            text = row.initial
+            textSize = 24f
+            setTextColor(Color.WHITE)
+            gravity = Gravity.CENTER
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(Color.parseColor("#2F4F8F"))
+            }
+        }
+    }
+    box.addView(avatar, LinearLayout.LayoutParams(size, size).apply { rightMargin = px(16) })
+    val texts = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL }
+    texts.addView(TextView(a).apply {
+        text = row.name
+        textSize = 17.5f
+        setTextColor(Color.WHITE)
+    })
+    if (row.detail.isNotEmpty()) {
+        texts.addView(TextView(a).apply {
+            text = row.detail
+            textSize = 14f
+            setTextColor(Color.parseColor("#9AA0AB"))
+            setPadding(0, px(2), 0, 0)
+        })
+    }
+    box.addView(texts, LinearLayout.LayoutParams(0, wrap, 1f))
     return box
 }

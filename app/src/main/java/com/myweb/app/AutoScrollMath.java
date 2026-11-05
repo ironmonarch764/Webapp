@@ -72,4 +72,61 @@ public final class AutoScrollMath {
         lastCheck = now;
         return true;
     }
+
+    /**
+     * Gulir ketuk-tepi: gerak LURUS dengan kecepatan konstan berdasarkan WAKTU (bukan jumlah frame), jadi mulus di 60/90/120 Hz.
+     * Ketukan beruntun searah menambah jarak yang tersisa (kecepatan tetap); arah berlawanan memulai dari awal.
+     */
+    public static final class Edge {
+        /** Frame yang sangat terlambat tidak membuat halaman melompat jauh. */
+        public static final double MAX_DT_MS = 50.0;
+
+        private double remaining;   // piksel tersisa, selalu >= 0
+        private double pxPerMs;
+        private double carry;       // pecahan piksel yang belum digeser
+        private long last = -1L;
+        private int dir = 1;
+
+        public boolean active() { return remaining > 0.5; }
+
+        public void begin(int direction, double distancePx, double speedPxPerMs) {
+            int d = direction >= 0 ? 1 : -1;
+            if (active() && d == dir) {
+                remaining += distancePx;
+            } else {
+                remaining = distancePx;
+                carry = 0;
+                last = -1L;
+                dir = d;
+            }
+            pxPerMs = speedPxPerMs;
+        }
+
+        public void cancel() {
+            remaining = 0;
+            carry = 0;
+            last = -1L;
+        }
+
+        /** Piksel yang digeser pada frame ini, bertanda (+ turun, - naik). Frame pertama tidak menggeser. */
+        public int step(long frameNanos) {
+            if (!active()) return 0;
+            if (last < 0L) { last = frameNanos; return 0; }
+            double dt = (frameNanos - last) / 1_000_000.0;
+            last = frameNanos;
+            if (dt <= 0) return 0;
+            if (dt > MAX_DT_MS) dt = MAX_DT_MS;
+            double want = Math.min(pxPerMs * dt, remaining);
+            remaining -= want;
+            carry += want;
+            int move = (int) carry;
+            carry -= move;
+            if (remaining <= 0.5) {          // selesai: bulatkan sisa pecahan agar total pas
+                move += (int) Math.round(carry);
+                carry = 0;
+                remaining = 0;
+            }
+            return dir * move;
+        }
+    }
 }
