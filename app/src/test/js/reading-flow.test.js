@@ -19,6 +19,7 @@ const preloadJs = (ahead = 4, maxi = 2) => konst('PRELOAD_JS').replace(/__AHEAD_
 const PRELOAD = preloadJs();
 const RESTORE = konst('RESTORE_JS');
 const SAVE = konst('SAVE_POS_JS');
+const edgeJs = (dir, frac = 0.9, speed = 2.0) => konst('EDGE_SCROLL_JS').replace(/__DIR__/g, String(dir)).replace(/__FRAC__/g, String(frac)).replace(/__SPEED__/g, String(speed));
 const restoreJs = (y, budget) => RESTORE.replace('__Y__', String(y)).replace('__BUDGET__', String(budget));
 
 // ---------- PNG kecil ----------
@@ -294,6 +295,58 @@ async function main() {
   const allLoaded = await p.evaluate(() => [].every.call(document.images, (m) => m.naturalWidth > 0));
   const sy = await scrollY(p);
   check('tinggi dokumen berubah saat pemulihan: semua gambar termuat & posisi akhir 3000 (' + sy + ')', allLoaded && Math.abs(sy - 3000) <= 4);
+  await p.close();
+
+  // E: ketuk tepi = gulir kecepatan konstan (bukan pelan-cepat-pelan), ketukan beruntun, batas, sentuhan menghentikan
+  console.log('\nE. Ketuk tepi: kecepatan konstan');
+  pages['/tall'] = '<!doctype html><meta name=viewport content="width=400"><style>html{scroll-behavior:smooth}body{margin:0;height:20000px}</style><body>x';
+  p = await ctx.newPage();
+  await p.goto(base + '/tall', { waitUntil: 'load' });
+  const frames = () => p.evaluate(() => new Promise((res) => {
+    const out = []; const t0 = performance.now();
+    (function f(t) { out.push([Math.round(t - t0), Math.round(window.pageYOffset * 10) / 10]); if (t - t0 < 900) requestAnimationFrame(f); else res(out); })(t0);
+  }));
+  const run = p.evaluate(edgeJs(1));
+  const fr = await frames(); await run;
+  const H = 800, target = H * 0.9;
+  const endY = fr[fr.length - 1][1];
+  check('E1 mendarat tepat 90% layar (' + endY + ' dari ' + target + ')', Math.abs(endY - target) < 2);
+  // laju per frame di bagian tengah gerakan: harus nyaris seragam (smooth bawaan: tengah >> ujung)
+  const moving = fr.filter((f, i) => i > 0 && f[1] > fr[i - 1][1] && f[1] < target - 1);
+  const speeds = []; for (let i = 1; i < moving.length; i++) { const dt = moving[i][0] - moving[i - 1][0]; if (dt > 0) speeds.push((moving[i][1] - moving[i - 1][1]) / dt); }
+  const sorted = speeds.slice().sort((a, b) => a - b);
+  const med = sorted[Math.floor(sorted.length / 2)];
+  const first = speeds.slice(0, 3).reduce((a, b) => a + b, 0) / 3, last = speeds.slice(-3).reduce((a, b) => a + b, 0) / 3;
+  check('E2 laju awal/akhir ~ laju tengah (awal ' + first.toFixed(2) + ', tengah ' + med.toFixed(2) + ', akhir ' + last.toFixed(2) + ' px/ms)',
+    first > med * 0.6 && first < med * 1.6 && last > med * 0.6 && last < med * 1.6);
+  check('E3 laju mendekati 2.0 px/ms (' + med.toFixed(2) + ')', med > 1.4 && med < 2.6);
+
+  // beruntun: dua ketukan cepat = dua layar, bukan satu
+  await p.evaluate(() => { window.scrollTo({ top: 0, behavior: 'instant' }); }); await sleep(100);   // 'instant': halaman uji memakai CSS scroll-behavior:smooth
+  await p.evaluate(edgeJs(1)); await sleep(60); await p.evaluate(edgeJs(1)); await sleep(1100);
+  const y2 = await p.evaluate(() => Math.round(window.pageYOffset));
+  check('E4 dua ketukan beruntun = 2 layar (' + y2 + ' dari ' + (2 * target) + ')', Math.abs(y2 - 2 * target) < 3);
+
+  // naik, dan tidak melewati batas atas
+  await p.evaluate(edgeJs(-1)); await sleep(900);
+  const y3 = await p.evaluate(() => Math.round(window.pageYOffset));
+  check('E5 ketuk naik kembali ke ' + target + ' (' + y3 + ')', Math.abs(y3 - target) < 3);
+  await p.evaluate(edgeJs(-1)); await sleep(900); await p.evaluate(edgeJs(-1)); await sleep(500);
+  check('E6 tidak melewati batas atas', (await p.evaluate(() => window.pageYOffset)) === 0);
+
+  // batas bawah
+  await p.evaluate(() => { document.scrollingElement.style.scrollBehavior = 'auto'; window.scrollTo({ top: 1e6, behavior: 'instant' }); });
+  const bottom = await p.evaluate(() => Math.round(window.pageYOffset));
+  await p.evaluate(edgeJs(1)); await sleep(400);
+  check('E7 tidak melewati batas bawah', (await p.evaluate(() => Math.round(window.pageYOffset))) === bottom);
+
+  // sentuhan menghentikan
+  await p.evaluate(() => { window.scrollTo({ top: 0, behavior: 'instant' }); });
+  await p.evaluate(edgeJs(1)); await sleep(80);
+  await p.evaluate(() => window.dispatchEvent(new Event('touchstart')));
+  const yStop = await p.evaluate(() => Math.round(window.pageYOffset)); await sleep(600);
+  const yAfter = await p.evaluate(() => Math.round(window.pageYOffset));
+  check('E8 sentuhan menghentikan gulir (' + yStop + ' -> ' + yAfter + ')', yStop > 0 && yStop < target && yAfter === yStop);
   await p.close();
 
   await browser.close();
