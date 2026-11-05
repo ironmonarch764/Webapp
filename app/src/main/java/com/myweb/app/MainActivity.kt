@@ -1151,12 +1151,14 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
 
     // Gulir otomatis dan gulir ketuk-tepi: satu menu, tetapi saklar on/off-nya terpisah
     private fun showScrollPopup() {
-        showPopupCard(this, "Gulir", listOf<SettingRow>(
-            SettingRow.Toggle("⏬", "Gulir otomatis", "Halaman bergulir sendiri; panel kecepatan muncul di layar", autoPanel.modeOn) { on ->
-                if (on != autoPanel.modeOn) autoPanel.toggle()
-                if (on) dismissMenuSheet()
-            },
-        ) + edgeScrollRows())
+        showPopupCard(this, "Gulir") {
+            listOf<SettingRow>(
+                SettingRow.Toggle("⏬", "Gulir otomatis", "Halaman bergulir sendiri; panel kecepatan muncul di layar", autoPanel.modeOn) { on ->
+                    if (on != autoPanel.modeOn) autoPanel.toggle()
+                    if (on) dismissMenuSheet()
+                }
+            ) + edgeScrollRows()
+        }
     }
 
     // ---------- Gulir ketuk-tepi: saklar, kecepatan, dan jarak mendarat ----------
@@ -1167,7 +1169,11 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
     private fun edgeLandLevel() = prefs.getInt("edge_land", 9).coerceIn(3, 10)
     private fun edgeFraction() = edgeLandLevel() / 10f
 
-    private fun edgeScrollRows(): List<SettingRow> = listOf(
+    // Saklar dimatikan = kedua slider (kecepatan dan mendarat) ikut disembunyikan
+    private fun edgeScrollRows(): List<SettingRow> =
+        edgeScrollAllRows().let { if (prefs.getBoolean("edge_on", true)) it else it.take(1) }
+
+    private fun edgeScrollAllRows(): List<SettingRow> = listOf(
         SettingRow.Toggle("👆", "Gulir ketuk-tepi", "Ketuk tepi layar untuk menggulir halaman", prefs.getBoolean("edge_on", true)) { on ->
             prefs.edit().putBoolean("edge_on", on).apply()
         },

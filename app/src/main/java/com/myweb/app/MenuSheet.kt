@@ -138,7 +138,10 @@ fun showMenuSheet(a: Activity, header: String, tiles: List<MenuAction>) {
 }
 
 // Kartu kecil di tengah layar berisi beberapa baris (saklar / aksi). Dipakai untuk submenu "Gulir" dan "Elemen".
-fun showPopupCard(a: Activity, title: String, rows: List<SettingRow>) {
+fun showPopupCard(a: Activity, title: String, rows: List<SettingRow>) = showPopupCard(a, title) { rows }
+
+// rowsProvider dipanggil lagi setiap ada saklar yang berubah, sehingga baris bisa muncul/hilang mengikuti saklar
+fun showPopupCard(a: Activity, title: String, rowsProvider: () -> List<SettingRow>) {
     val d = newCentered(a)
     val dp = a.resources.displayMetrics.density
     fun px(v: Int) = (v * dp).toInt()
@@ -156,13 +159,18 @@ fun showPopupCard(a: Activity, title: String, rows: List<SettingRow>) {
         setTypeface(null, android.graphics.Typeface.BOLD)
         setPadding(px(10), 0, px(10), px(8))
     }, LinearLayout.LayoutParams(MATCH, WRAP))
-    rows.forEachIndexed { idx, row ->
-        if (idx > 0) {
-            root.addView(View(a).apply { setBackgroundColor(Color.parseColor("#2A2C33")) },
-                LinearLayout.LayoutParams(MATCH, 1).apply { leftMargin = px(58) })
+    fun fill() {
+        while (root.childCount > 1) root.removeViewAt(1)
+        rowsProvider().forEachIndexed { idx, row ->
+            if (idx > 0) {
+                root.addView(View(a).apply { setBackgroundColor(Color.parseColor("#2A2C33")) },
+                    LinearLayout.LayoutParams(MATCH, 1).apply { leftMargin = px(58) })
+            }
+            // dipasang lewat post agar baris tidak dibongkar saat listener saklarnya masih berjalan
+            root.addView(buildRow(a, row, { v -> px(v) }) { root.post { if (d.isShowing) fill() } })
         }
-        root.addView(buildRow(a, row, { v -> px(v) }) { })
     }
+    fill()
     presentCentered(a, d, root)
 }
 

@@ -7,6 +7,8 @@ import android.os.SystemClock
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
+import android.view.ViewGroup
+import android.view.animation.DecelerateInterpolator
 import android.webkit.WebView
 import kotlin.math.abs
 
@@ -30,6 +32,7 @@ class FabController(
 ) {
     // ---- Pengaturan (ubah angkanya sesuai selera) ----
     private val COOLDOWN_MS = 700L      // jeda tombol menu, milidetik
+    private val STAGGER_MS = 70L        // jeda antar tombol saat muncul/hilang bergantian
     private val SIDE_ZONE = 0.09f       // lebar area ketuk kiri & kanan (9% lebar layar). 0f = matikan
     private val SIDE_TOP = 0.15f        // area samping mulai dari 15% tinggi layar (sisakan bar atas situs)
     private val SIDE_BOTTOM = 0.15f     // area samping berakhir 15% sebelum dasar (sisakan bar bawah situs)
@@ -54,6 +57,7 @@ class FabController(
 
     init {
         attach()
+        playEntrance()
     }
 
     // Tidak dipakai lagi (Android tidak melaporkan bar sementara ke aplikasi).
@@ -76,15 +80,56 @@ class FabController(
         lockUntil = SystemClock.uptimeMillis() + COOLDOWN_MS
         shown = show
 
-        // tiga tombol setengah lonjong menyelinap ke tepi kanan layar saat disembunyikan
-        val dist = (if (fab.width > 0) fab.width else (52 * webView.resources.displayMetrics.density).toInt()).toFloat()
-        if (show) {
-            fab.visibility = View.VISIBLE
-            fab.animate().alpha(1f).translationX(0f).setDuration(180).start()
-        } else {
-            fab.animate().alpha(0f).translationX(dist).setDuration(180)
-                .withEndAction { if (!shown) fab.visibility = View.INVISIBLE }
-                .start()
+        val group = fab as? ViewGroup
+        if (group == null || group.childCount == 0) {
+            // satu tombol saja: menyelinap ke tepi kanan layar
+            val dist = (if (fab.width > 0) fab.width else (52 * webView.resources.displayMetrics.density).toInt()).toFloat()
+            if (show) {
+                fab.visibility = View.VISIBLE
+                fab.animate().alpha(1f).translationX(0f).setDuration(180).start()
+            } else {
+                fab.animate().alpha(0f).translationX(dist).setDuration(180)
+                    .withEndAction { if (!shown) fab.visibility = View.INVISIBLE }
+                    .start()
+            }
+            return
+        }
+        // beberapa tombol: muncul bergantian dari ATAS ke BAWAH, menghilang bergantian dari BAWAH ke ATAS
+        val n = group.childCount
+        if (show) fab.visibility = View.VISIBLE
+        for (i in 0 until n) {
+            val c = group.getChildAt(i)
+            c.animate().cancel()
+            if (show) {
+                c.animate().alpha(1f).translationX(0f)
+                    .setStartDelay(i * STAGGER_MS).setDuration(200).setInterpolator(DecelerateInterpolator()).start()
+            } else {
+                // tombol paling atas selesai paling akhir: setelah itu seluruh wadah disembunyikan agar tidak menangkap ketukan
+                val a = c.animate().alpha(0f).translationX(slideDist(c))
+                    .setStartDelay((n - 1 - i) * STAGGER_MS).setDuration(180).setInterpolator(DecelerateInterpolator())
+                if (i == 0) a.withEndAction { if (!shown) fab.visibility = View.INVISIBLE }
+                a.start()
+            }
+        }
+    }
+
+    private fun slideDist(c: View): Float =
+        (if (c.width > 0) c.width else (76 * webView.resources.displayMetrics.density).toInt()).toFloat()
+
+    // Saat aplikasi dibuka: tombol keluar satu per satu dari atas ke bawah
+    private fun playEntrance() {
+        val group = fab as? ViewGroup ?: return
+        for (i in 0 until group.childCount) {
+            val c = group.getChildAt(i)
+            c.alpha = 0f
+            c.translationX = slideDist(c)
+        }
+        fab.post {
+            if (!shown) return@post   // sudah disembunyikan sebelum sempat tampil: biarkan keadaan tersembunyi
+            for (i in 0 until group.childCount) {
+                group.getChildAt(i).animate().alpha(1f).translationX(0f)
+                    .setStartDelay(300L + i * STAGGER_MS).setDuration(220).setInterpolator(DecelerateInterpolator()).start()
+            }
         }
     }
 
