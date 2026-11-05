@@ -139,6 +139,40 @@ run();setTimeout(run,600);setTimeout(run,1800);
 //  - Saat batas habis dan posisi tidak tercapai: bergeser ke dasar terdekat bila dokumen sudah >= 60% dari posisi
 //    tersimpan; kalau jauh lebih pendek, kembali ke posisi awal sebelum pemulihan (posisi lama tidak masuk akal untuk halaman ini).
 //  - window.__rsActive = true selama pemulihan berjalan (dipakai SAVE_POS_JS agar posisi sementara tidak tersimpan).
+// Ketuk tepi: gulir SATU layar dengan KECEPATAN KONSTAN (linear). Animasi 'smooth' bawaan browser pelan-cepat-pelan.
+//  - __DIR__ = 1 turun / -1 naik, __FRAC__ = bagian tinggi layar, __SPEED__ = px per milidetik
+//  - Ketukan beruntun saat masih berjalan: target ditambah, kecepatan tetap sama (tidak ngerem lalu ngebut)
+//  - Sentuhan pengguna menghentikan animasi. scrollTo memakai behavior 'instant' agar CSS scroll-behavior situs tidak ikut menghaluskan.
+const val EDGE_SCROLL_JS = """
+(function(){
+  var s = window.__edgeScroll || (window.__edgeScroll = { active: false, target: 0, raf: 0, hooked: false });
+  if (!s.hooked) {
+    s.hooked = true;
+    window.addEventListener('touchstart', function(){ s.active = false; cancelAnimationFrame(s.raf); }, { passive: true });
+  }
+  var root = document.scrollingElement || document.documentElement;
+  var cur = window.pageYOffset || root.scrollTop || 0;
+  var maxY = Math.max(0, root.scrollHeight - window.innerHeight);
+  var base = s.active ? s.target : cur;
+  var target = Math.max(0, Math.min(maxY, base + window.innerHeight * __FRAC__ * __DIR__));
+  var dist = target - cur;
+  if (Math.abs(dist) < 1) { s.active = false; return; }
+  var dur = Math.max(150, Math.abs(dist) / __SPEED__);
+  s.target = target;
+  s.active = true;
+  cancelAnimationFrame(s.raf);
+  var t0 = null;
+  function step(t){
+    if (!s.active) return;
+    if (t0 === null) t0 = t;
+    var p = Math.min(1, (t - t0) / dur);
+    window.scrollTo({ top: cur + dist * p, left: 0, behavior: 'instant' });
+    if (p < 1) s.raf = requestAnimationFrame(step); else s.active = false;
+  }
+  s.raf = requestAnimationFrame(step);
+})();
+"""
+
 const val RESTORE_JS = """
 (function(y,budget){
 if(window.__rsStop)window.__rsStop();
