@@ -1089,12 +1089,12 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
             this,
             if (host.isNullOrEmpty()) "Menu" else host,
             listOf(
-                MenuAction("🛡️", "Perlindungan", adOn || trackerBlockOn(),
+                MenuAction("@perlindungan", "Perlindungan", adOn || trackerBlockOn(),
                     if (adOn || trackerBlockOn()) (adBlocked.get() + trackerBlocked.get()).toString() + " diblokir" else "OFF") { showProtection() },
-                MenuAction("🔄", "Segarkan") { if (onErrorPage()) retryFailed() else webView.reload() },
-                MenuAction("🏠", "Beranda") { load() },
-                MenuAction("🔖", "Situs") { showSites() },
-                MenuAction("⚙️", "Pengaturan") { showSettings() }
+                MenuAction("@refresh", "Segarkan") { if (onErrorPage()) retryFailed() else webView.reload() },
+                MenuAction("@home", "Beranda") { load() },
+                MenuAction("@situs", "Situs") { showSites() },
+                MenuAction("@pengaturan", "Pengaturan") { showSettings() }
             )
         )
     }
@@ -1113,17 +1113,17 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
             val cur = webView.url ?: ""
             val hidden = hiddenElements()
             val adRows = ArrayList<SettingRow>()
-            adRows.add(SettingRow.Toggle("🛡️", "Pemblokir iklan", "Blokir iklan dari daftar filter", adBlockOn()) { on -> setAdBlock(on) })
-            adRows.add(SettingRow.Toggle("🪟", "Pemblokir popup", "Cegah jendela popup dan pindah domain yang tidak diminta", popupBlockOn()) { on ->
+            adRows.add(SettingRow.Toggle("@blok_iklan", "Pemblokir iklan", "Blokir iklan dari daftar filter", adBlockOn()) { on -> setAdBlock(on) })
+            adRows.add(SettingRow.Toggle("@blok_popup", "Pemblokir popup", "Cegah jendela popup dan pindah domain yang tidak diminta", popupBlockOn()) { on ->
                 prefs.edit().putBoolean("popupblock", on).apply()
             })
-            adRows.add(SettingRow.Action("🎯", "Tandai elemen iklan", "Sembunyikan bagian halaman yang masih mengganggu") {
+            adRows.add(SettingRow.Action("@sembunyi", "Tandai elemen iklan", "Sembunyikan bagian halaman yang masih mengganggu") {
                 dismissMenuSheet()
                 startPicker()
             })
             // hanya muncul bila memang ada elemen yang disembunyikan di situs ini
             if (hidden.isNotEmpty()) {
-                adRows.add(SettingRow.Action("🧹", "Elemen tersembunyi", hidden.size.toString() + " elemen di situs ini, ketuk untuk memulihkan") {
+                adRows.add(SettingRow.Action("@sembunyi", "Elemen tersembunyi", hidden.size.toString() + " elemen di situs ini, ketuk untuk memulihkan") {
                     dismissMenuSheet()
                     showHiddenElements()
                 })
@@ -1131,17 +1131,17 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
             listOf(
                 SettingSection("Pemblokir iklan", adRows),
                 SettingSection("Perlindungan privasi", listOf(
-                    SettingRow.Toggle("🕵️", "Pelacak",
+                    SettingRow.Toggle("@pelacak", "Pelacak",
                         if (trackerBlocked.get() > 0) trackerBlocked.get().toString() + " diblokir di halaman ini" else "Blokir pelacak analitik dan pengukuran",
                         trackerBlockOn()) { on ->
                         prefs.edit().putBoolean("trackerblock", on).apply()
                         if (!onErrorPage()) webView.reload()
                     },
-                    SettingRow.Value("🚫", "GPC", "", if (gpcOn()) "Aktif" else "Mati", if (gpcOn()) 1 else 0) {
+                    SettingRow.Value("@gpc", "GPC", "", if (gpcOn()) "Aktif" else "Mati", if (gpcOn()) 1 else 0) {
                         dismissMenuSheet()
                         showSettings()
                     },
-                    SettingRow.Value("🔒", "Koneksi", "",
+                    SettingRow.Value("@https", "Koneksi", "",
                         if (cur.startsWith("https://")) "HTTPS" else if (cur.startsWith("http://")) "HTTP (tidak aman)" else "-",
                         if (cur.startsWith("https://")) 1 else if (cur.startsWith("http://")) -1 else 0, null)
                 ))
@@ -1153,7 +1153,7 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
     private fun showScrollPopup() {
         showPopupCard(this, "Gulir") {
             listOf<SettingRow>(
-                SettingRow.Toggle("⏬", "Gulir otomatis", "Halaman bergulir sendiri; panel kecepatan muncul di layar", autoPanel.modeOn) { on ->
+                SettingRow.Toggle("@autoscroll", "Gulir otomatis", "Halaman bergulir sendiri; panel kecepatan muncul di layar", autoPanel.modeOn) { on ->
                     if (on != autoPanel.modeOn) autoPanel.toggle()
                     if (on) dismissMenuSheet()
                 }
@@ -1174,16 +1174,14 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
         edgeScrollAllRows().let { if (prefs.getBoolean("edge_on", true)) it else it.take(1) }
 
     private fun edgeScrollAllRows(): List<SettingRow> = listOf(
-        SettingRow.Toggle("👆", "Gulir ketuk-tepi", "Ketuk tepi layar untuk menggulir halaman", prefs.getBoolean("edge_on", true)) { on ->
+        SettingRow.Toggle("@gulir_ketuk", "Gulir ketuk-tepi", "Ketuk tepi layar untuk menggulir halaman", prefs.getBoolean("edge_on", true)) { on ->
             prefs.edit().putBoolean("edge_on", on).apply()
         },
-        SettingRow.Level(
-            "🏎️", "Kecepatan gulir ketuk-tepi", "Seberapa cepat halaman bergeser saat tepi diketuk (tetap, tidak melambat)",
+        SettingRow.Level("@kecepatan", "Kecepatan gulir ketuk-tepi", "Seberapa cepat halaman bergeser saat tepi diketuk (tetap, tidak melambat)",
             1, 10, edgeSpeedLevel(),
             { v -> v.toString() + " / 10" }
         ) { v -> prefs.edit().putInt("edge_speed", v).apply() },
-        SettingRow.Level(
-            "🎯", "Mendarat (jarak per ketukan)", "Sejauh apa halaman turun/naik tiap ketukan; kurang dari 100% menyisakan bagian yang tumpang tindih",
+        SettingRow.Level("@mendarat", "Mendarat (jarak per ketukan)", "Sejauh apa halaman turun/naik tiap ketukan; kurang dari 100% menyisakan bagian yang tumpang tindih",
             3, 10, edgeLandLevel(),
             { v -> (v * 10).toString() + "% layar" }
         ) { v -> prefs.edit().putInt("edge_land", v).apply() }
@@ -1239,30 +1237,28 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
             if (others > 0) parts.add(others.toString() + " situs")
             listOf(
                 SettingSection("Akun", listOf(
-                    SettingRow.Action("👤", "Akun dan sesi masuk",
+                    SettingRow.Action("@akun", "Akun dan sesi masuk",
                         if (parts.isEmpty()) "Belum ada sesi masuk terdeteksi" else parts.joinToString(" · ")) {
                         showAccounts()
                     }
                 )),
                 SettingSection("Tampilan dan membaca", listOf(
-                    SettingRow.Toggle("↻", "Tarik untuk menyegarkan", "Tarik halaman ke bawah dari bagian atas untuk memuat ulang", prefs.getBoolean("pull_refresh", true)) { on ->
+                    SettingRow.Toggle("@tarik", "Tarik untuk menyegarkan", "Tarik halaman ke bawah dari bagian atas untuk memuat ulang", prefs.getBoolean("pull_refresh", true)) { on ->
                         prefs.edit().putBoolean("pull_refresh", on).apply()
                         swipe.isEnabled = on
                     },
-                    SettingRow.Toggle("🖼️", "Pramuat gambar", "Memuat gambar di depan posisi baca lebih awal", preloadOn()) { on ->
+                    SettingRow.Toggle("@pramuat", "Pramuat gambar", "Memuat gambar di depan posisi baca lebih awal", preloadOn()) { on ->
                         prefs.edit().putBoolean("preload", on).apply()
                         if (on) injectPreload(webView) else webView.evaluateJavascript("window.__preOff=1", null)
                     },
-                    SettingRow.Level(
-                        "📚", "Gambar dimuat di depan", "Otomatis menyesuaikan koneksi dan RAM perangkat",
+                    SettingRow.Level("@gambar_depan", "Gambar dimuat di depan", "Otomatis menyesuaikan koneksi dan RAM perangkat",
                         0, 12, preloadAhead(),
                         { v -> if (v == 0) "Otomatis" else v.toString() + " gambar" }
                     ) { v ->
                         prefs.edit().putInt("preload_ahead", v).apply()
                         if (preloadOn()) injectPreload(webView)
                     },
-                    SettingRow.Level(
-                        "⚡", "Unduhan bersamaan", "Jumlah gambar yang diunduh sekaligus oleh pramuat",
+                    SettingRow.Level("@unduhan", "Unduhan bersamaan", "Jumlah gambar yang diunduh sekaligus oleh pramuat",
                         1, 4, preloadParallel(),
                         { v -> v.toString() + " sekaligus" }
                     ) { v ->
@@ -1271,21 +1267,21 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
                     },
                 ) + edgeScrollRows()),
                 SettingSection("Privasi dan pemblokiran", listOf(
-                    SettingRow.Toggle("🛡️", "Pemblokir iklan", "Saklar utama: blokir iklan, pelacak, dan jendela iklan", adBlockOn()) { on ->
+                    SettingRow.Toggle("@blok_iklan", "Pemblokir iklan", "Saklar utama: blokir iklan, pelacak, dan jendela iklan", adBlockOn()) { on ->
                         setAdBlock(on)
                     },
-                    SettingRow.Toggle("🪟", "Pemblokir popup", "Cegah jendela popup yang tidak diminta", popupBlockOn()) { on ->
+                    SettingRow.Toggle("@blok_popup", "Pemblokir popup", "Cegah jendela popup yang tidak diminta", popupBlockOn()) { on ->
                         prefs.edit().putBoolean("popupblock", on).apply()
                     },
-                    SettingRow.Toggle("🕵️", "Pelacak", "Blokir pelacak analitik dan pengukuran (daftar bawaan)", trackerBlockOn()) { on ->
+                    SettingRow.Toggle("@pelacak", "Pelacak", "Blokir pelacak analitik dan pengukuran (daftar bawaan)", trackerBlockOn()) { on ->
                         prefs.edit().putBoolean("trackerblock", on).apply()
                         if (!onErrorPage()) webView.reload()
                     },
-                    SettingRow.Toggle("🛑", "Cegah pengalihan domain", "Blokir pindah ke domain lain (berlaku per situs)", blockCross) { on ->
+                    SettingRow.Toggle("@cegah", "Cegah pengalihan domain", "Blokir pindah ke domain lain (berlaku per situs)", blockCross) { on ->
                         blockCross = on
                         Toast.makeText(this, if (on) "Pengalihan domain diblokir" else "Pengalihan domain diizinkan", Toast.LENGTH_SHORT).show()
                     },
-                    SettingRow.Toggle("🧩", "Penyembunyi elemen iklan", "Sembunyikan kotak iklan yang tersisa (butuh pemblokir iklan aktif)", prefs.getBoolean("cosmetic", false)) { on ->
+                    SettingRow.Toggle("@sembunyi", "Penyembunyi elemen iklan", "Sembunyikan kotak iklan yang tersisa (butuh pemblokir iklan aktif)", prefs.getBoolean("cosmetic", false)) { on ->
                         prefs.edit().putBoolean("cosmetic", on).apply()
                         Toast.makeText(this, if (on) "Diaktifkan, memproses daftar..." else "Dimatikan", Toast.LENGTH_SHORT).show()
                         logEvent(this, "filter kosmetik " + (if (on) "ON" else "OFF"))
@@ -1294,41 +1290,41 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
                             runOnUiThread { if (!isDestroyed) webView.reload() }
                         }
                     },
-                    SettingRow.Action("⬇️", "Perbarui daftar filter", "Unduh daftar iklan terbaru") {
+                    SettingRow.Action("@perbarui", "Perbarui daftar filter", "Unduh daftar iklan terbaru") {
                         Toast.makeText(this, "Mengunduh daftar filter...", Toast.LENGTH_SHORT).show()
                         refreshLists(true)
                     }
                 )),
                 SettingSection("Privasi lanjutan", listOf(
-                    SettingRow.Toggle("🚫", "Kontrol Privasi Global (GPC)", "Beri sinyal \"jangan jual data saya\" ke situs (lewat JavaScript)", gpcOn()) { on ->
+                    SettingRow.Toggle("@gpc", "Kontrol Privasi Global (GPC)", "Beri sinyal \"jangan jual data saya\" ke situs (lewat JavaScript)", gpcOn()) { on ->
                         prefs.edit().putBoolean("gpc", on).apply()
                         applyDocStart()
                     },
-                    SettingRow.Toggle("🔗", "Perlindungan tautan AMP", "Lewati pengalihan Google, buka situs aslinya", ampOn()) { on ->
+                    SettingRow.Toggle("@amp", "Perlindungan tautan AMP", "Lewati pengalihan Google, buka situs aslinya", ampOn()) { on ->
                         prefs.edit().putBoolean("amp_unwrap", on).apply()
                     },
-                    SettingRow.Toggle("🧼", "Pembersih pelacak URL", "Hapus parameter pelacak (utm_, fbclid, gclid, dll.) saat membuka tautan", urlCleanOn()) { on ->
+                    SettingRow.Toggle("@url", "Pembersih pelacak URL", "Hapus parameter pelacak (utm_, fbclid, gclid, dll.) saat membuka tautan", urlCleanOn()) { on ->
                         prefs.edit().putBoolean("url_clean", on).apply()
                     },
-                    SettingRow.Toggle("🖐️", "Perlindungan sidik jari (dasar)", "Menyamarkan bahasa dan spesifikasi perangkat. Beberapa situs bisa tampil berbahasa Inggris", fpOn()) { on ->
+                    SettingRow.Toggle("@sidik", "Perlindungan sidik jari (dasar)", "Menyamarkan bahasa dan spesifikasi perangkat. Beberapa situs bisa tampil berbahasa Inggris", fpOn()) { on ->
                         prefs.edit().putBoolean("fingerprint", on).apply()
                         applyDocStart()
                         Toast.makeText(this, "Berlaku mulai halaman berikutnya", Toast.LENGTH_SHORT).show()
                     },
-                    SettingRow.Toggle("🍪", "Blokir cookie pihak ketiga", "Blokir pelacakan lintas situs; dapat mengganggu login", block3pOn()) { on ->
+                    SettingRow.Toggle("@cookie", "Blokir cookie pihak ketiga", "Blokir pelacakan lintas situs; dapat mengganggu login", block3pOn()) { on ->
                         prefs.edit().putBoolean("block3p", on).apply()
                         CookieManager.getInstance().setAcceptThirdPartyCookies(webView, !on)
                         Toast.makeText(this, "Muat ulang halaman agar berlaku", Toast.LENGTH_SHORT).show()
                     },
-                    SettingRow.Toggle("🔒", "Paksa HTTPS", "Naikkan tautan http:// ke https:// (situs yang hanya mendukung HTTP tidak akan terbuka)", httpsForceOn()) { on ->
+                    SettingRow.Toggle("@https", "Paksa HTTPS", "Naikkan tautan http:// ke https:// (situs yang hanya mendukung HTTP tidak akan terbuka)", httpsForceOn()) { on ->
                         prefs.edit().putBoolean("https_force", on).apply()
                     }
                 )),
                 SettingSection("Jaringan", listOf(
-                    SettingRow.Action("🧭", "DNS aman (DoH)", dnsLabel()) { showDnsDialog() }
+                    SettingRow.Action("@dns", "DNS aman (DoH)", dnsLabel()) { showDnsDialog() }
                 )),
                 SettingSection("Lanjutan", listOf(
-                    SettingRow.Action("🩺", "Diagnostik", "Ringkasan teknis untuk pelaporan masalah") {
+                    SettingRow.Action("@diagnostik", "Diagnostik", "Ringkasan teknis untuk pelaporan masalah") {
                         showDiagDialog(this, prefs, sharedRules.summary())
                     }
                 ))

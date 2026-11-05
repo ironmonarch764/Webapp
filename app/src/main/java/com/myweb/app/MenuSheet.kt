@@ -99,7 +99,8 @@ fun showMenuSheet(a: Activity, header: String, tiles: List<MenuAction>) {
             isClickable = true
             setOnClickListener { d.dismiss(); q.onClick() }
         }
-        tile.addView(TextView(a).apply { text = q.icon; textSize = 22f; gravity = Gravity.CENTER })
+        tile.addView(Icons.make(a, q.icon, 22f),
+            if (Icons.has(q.icon)) LinearLayout.LayoutParams(px(34), px(34)) else LinearLayout.LayoutParams(WRAP, WRAP))
         tile.addView(TextView(a).apply {
             text = q.label
             textSize = 11.5f

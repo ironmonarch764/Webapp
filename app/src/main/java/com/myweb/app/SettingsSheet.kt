@@ -164,8 +164,8 @@ internal fun buildRow(a: Activity, row: SettingRow, px: (Int) -> Int, rerender: 
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
     }
-    top.addView(TextView(a).apply { text = row.icon; textSize = 20f; gravity = Gravity.CENTER },
-        LinearLayout.LayoutParams(px(32), wrap).apply { rightMargin = px(12) })
+    top.addView(Icons.make(a, row.icon, 20f),
+        LinearLayout.LayoutParams(px(32), if (Icons.has(row.icon)) px(32) else wrap).apply { rightMargin = px(12) })
 
     val texts = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL }
     texts.addView(TextView(a).apply {
