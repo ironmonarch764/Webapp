@@ -50,6 +50,14 @@ class FabController(
     private var lastTouch = 0L
     private var revealUntil = 0L
     private var shownBeforeReveal: Boolean? = null
+    private val density = webView.resources.displayMetrics.density
+    private val slop = ViewConfiguration.get(webView.context).scaledTouchSlop.toFloat()
+    // Keadaan sentuhan yang sedang berlangsung
+    private var downX = 0f
+    private var downY = 0f
+    private var downT = 0L
+    private var multi = false
+    private var topDown = false
     private val handler = Handler(Looper.getMainLooper())
     private val restore = Runnable {
         val prev = shownBeforeReveal
