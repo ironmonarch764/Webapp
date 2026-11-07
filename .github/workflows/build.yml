@@ -31,6 +31,11 @@ jobs:
           mkdir -p /tmp/ut
           javac -d /tmp/ut app/src/main/java/com/myweb/app/UrlRules.java app/src/test/java/com/myweb/app/UrlRulesSelfTest.java
           java -cp /tmp/ut com.myweb.app.UrlRulesSelfTest
+      - name: Page policy tests
+        run: |
+          mkdir -p /tmp/pt
+          javac -d /tmp/pt app/src/main/java/com/myweb/app/PagePolicy.java app/src/main/java/com/myweb/app/ReadingPos.java app/src/test/java/com/myweb/app/PagePolicySelfTest.java
+          java -cp /tmp/pt com.myweb.app.PagePolicySelfTest
       # Secret hanya diberikan ke langkah yang membutuhkannya (bukan ke seluruh job / action pihak ketiga)
       - name: Check signing secrets
         env:

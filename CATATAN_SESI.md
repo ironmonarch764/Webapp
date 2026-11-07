@@ -119,3 +119,12 @@ Belum diuji / sisa: lihat laporan akhir sesi (build Kotlin/APK, perangkat nyata,
 - FabController.kt: pegangan menyelinap ke kanan (bukan naik ke atas) saat disembunyikan; parameter baru onHide menutup 3 tombol.
 - MainActivity.kt: showMenu() kini 5 tombol (Perlindungan, Segarkan, Beranda, Situs, Pengaturan); Gulir dan Penyesuaian warna pindah ke 3 tombol bulat.
 - Pemeriksaan: XML valid, kurung seimbang. Belum ada render/uji layar. Ukuran/posisi (52x76dp, 100dp dari atas, bulatan 56dp) mudah diubah di activity_main.xml dan QuickTools.kt.
+
+## Fitur Page (tab) + Situs list/kotak - BELUM dikompilasi/diuji di perangkat
+- Pages.kt (baru): Page, PageStore (daftar page di prefs "pages_json"), PageLimits, sheet daftar Page. PagePolicy.java (baru, diuji 443 pemeriksaan): batas aman menurut RAM, waktu hibernasi/tutup, pemilihan page.
+- MainActivity: WebView kini dibuat per page (createWebView/setupWebView); `webView` = page aktif; keadaan per page (siteBase, firstLoad, restore*, failedUrl) pindah ke Page. activatePage/hibernatePage/closePage/openInNewPage/enforceLimit/idleCheck. Setelah crash/renderer mati/aplikasi dimulai ulang: semua page hibernasi kecuali yang terakhir dibuka.
+- Pilihan "Page sekarang / Page baru" muncul saat membuka situs tersimpan dan "Buka alamat baru" (bila Page ON). Page ON = default.
+- Pengaturan > Page: saklar Page, Batas page aktif (0 = otomatis; di atas saran HP ada peringatan), Hibernasi setelah, Tutup otomatis + lamanya (default 24 jam).
+- QuickTools: tombol ke-4 "Page" di bawah Gulir (hanya bila Page ON) + lencana jumlah page. activity_main.xml: WebView diganti FrameLayout pageHost.
+- Sites.kt: tampilan daftar/kotak, tombol Edit (sematkan, urutkan, ubah, hapus). Data situs kini punya flag "p" (pin), kompatibel dengan data lama.
+- Ikon baru: ik_edit, ik_page, ik_batas_page, ik_view_grid, ik_view_list (dipotong dari foto).

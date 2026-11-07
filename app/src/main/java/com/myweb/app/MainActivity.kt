@@ -12,6 +12,7 @@ import android.os.Bundle
 import android.os.Message
 import android.text.InputType
 import android.view.View
+import android.view.ViewGroup
 import android.view.WindowManager
 import android.webkit.*
 import android.widget.EditText
@@ -60,21 +61,50 @@ class MainActivity : AppCompatActivity() {
         set(v) {
             prefs.edit().putString("url", v).remove("last_page").remove("last_scroll").apply()
             addSiteIfNew(v)
-            configBase = baseDomain(Uri.parse(v).host)
+            if (::curPage.isInitialized) {
+                // alamat awal page yang sedang dibuka berganti: posisi baca lama bukan miliknya lagi
+                curPage.home = v
+                curPage.url = ""
+                curPage.scroll = 0
+                curPage.title = ""
+                persistPages()
+            }
         }
 
     private fun crossKey() = "blockCross:" + baseDomain(Uri.parse(currentUrl).host)
+
+    // Pengaturan "cegah pindah domain" untuk page tertentu (kuncinya per domain alamat awal page itu)
+    private fun blockCrossFor(pg: Page): Boolean =
+        prefs.getBoolean("blockCross:" + pg.configBase, prefs.getBoolean("blockCross", true))
     private var blockCross: Boolean
     get() = prefs.getBoolean(crossKey(), prefs.getBoolean("blockCross", true))
     set(v) = prefs.edit().putBoolean(crossKey(), v).apply()
 
-    @Volatile private var configBase: String = ""
-    @Volatile private var siteBase: String = ""
-    private var firstLoad = false
+    // ----- Page: tiap page punya WebView dan keadaan sendiri. webView = WebView milik page yang sedang dibuka. -----
+    private val pages = ArrayList<Page>()
+    private lateinit var curPage: Page
+    private lateinit var pageHost: FrameLayout
+    private var quickTools: QuickTools? = null
+    private var lastLimitWarnAt = 0L
+
+    // Keadaan per page yang dulu berupa field Activity. Kode lama memakai nama yang sama = page yang sedang dibuka
+    // (callback WebView memakai page miliknya sendiri, bukan yang sedang dibuka).
+    private var firstLoad: Boolean
+        get() = curPage.firstLoad
+        set(v) { curPage.firstLoad = v }
+    private var restoreY: Int
+        get() = curPage.restoreY
+        set(v) { curPage.restoreY = v }
+    private var restoreUrl: String?
+        get() = curPage.restoreUrl
+        set(v) { curPage.restoreUrl = v }
+    private var restoreAt: Long
+        get() = curPage.restoreAt
+        set(v) { curPage.restoreAt = v }
+    private var failedUrl: String?      // halaman utama yang terakhir gagal dimuat (untuk "Coba lagi")
+        get() = curPage.failedUrl
+        set(v) { curPage.failedUrl = v }
     private var pickerActive = false
-    private var restoreY = 0
-    private var restoreUrl: String? = null
-    private var restoreAt = 0L
     @Volatile private var pickerToken: String? = null
     private var webViewDead = false
     private var lastSslToast = 0L
@@ -82,7 +112,6 @@ class MainActivity : AppCompatActivity() {
     private var lastUpgradeAt = 0L
     private val warnedHttp = HashSet<String>()
     private lateinit var swipe: androidx.swiperefreshlayout.widget.SwipeRefreshLayout
-    private var failedUrl: String? = null     // halaman utama yang terakhir gagal dimuat (untuk "Coba lagi")
     private var dnsState = ""                 // kosong = DNS terpilih benar-benar dipasang; selain itu alasan tidak aktif
 
     private val chooser = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
@@ -90,15 +119,15 @@ class MainActivity : AppCompatActivity() {
         fileCallback = null
     }
 
-    inner class Bridge {
+    inner class Bridge(private val pg: Page) {
         @JavascriptInterface
-        fun retry() { runOnUiThread { if (onErrorPage()) retryFailed() } }
+        fun retry() { runOnUiThread { if (pg === curPage && onErrorPage()) retryFailed() } }
 
         @JavascriptInterface
-        fun systemDns() { runOnUiThread { if (onErrorPage()) setDns("off") } }
+        fun systemDns() { runOnUiThread { if (pg === curPage && onErrorPage()) setDns("off") } }
 
         @JavascriptInterface
-        fun changeUrl() { runOnUiThread { if (onErrorPage()) askUrl(true) } }
+        fun changeUrl() { runOnUiThread { if (pg === curPage && onErrorPage()) askUrl(true) } }
 
         @JavascriptInterface
         fun addRule(token: String, sel: String) {
@@ -198,7 +227,12 @@ class MainActivity : AppCompatActivity() {
             recreate()
             return
         }
-        if (renderGoneCount == 2) prefs.edit().remove("last_page").remove("last_scroll").apply()
+        if (renderGoneCount == 2) {
+            prefs.edit().remove("last_page").remove("last_scroll").apply()
+            curPage.url = ""
+            curPage.scroll = 0
+        }
+        persistPages()   // semua page kembali sebagai hibernasi; hanya page terakhir yang dihidupkan lagi
         recreate()
     }
 
@@ -211,9 +245,9 @@ class MainActivity : AppCompatActivity() {
 
     // Pihak pertama = situs yang sedang dibuka ATAU alamat yang disimpan pengguna. siteBase baru terisi setelah halaman
     // pertama selesai, jadi tanpa configBase situs utama sendiri bisa terblokir saat pemuatan pertama.
-    private fun isFirstParty(host: String): Boolean {
+    private fun isFirstParty(host: String, pg: Page = curPage): Boolean {
         val b = baseDomain(host)
-        return b.isNotEmpty() && (b == siteBase || b == configBase)
+        return b.isNotEmpty() && (b == pg.siteBase || b == pg.configBase)
     }
 
     private fun adBlockOn() = prefs.getBoolean("adblock", true)
@@ -249,7 +283,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     // Skrip yang harus berjalan sebelum skrip halaman: sinyal GPC dan (dasar) perlindungan sidik jari.
-    private var docStartHandler: ScriptHandler? = null
     private fun docStartJs(): String {
         val sb = StringBuilder()
         if (gpcOn()) sb.append("try{Object.defineProperty(Navigator.prototype,'globalPrivacyControl',{get:function(){return true},configurable:true})}catch(e){}")
@@ -257,18 +290,24 @@ class MainActivity : AppCompatActivity() {
         return sb.toString()
     }
 
-    private fun applyDocStart() {
-        try { docStartHandler?.remove() } catch (e: Exception) { }
-        docStartHandler = null
+    private fun applyDocStart(pg: Page) {
+        val wv = pg.wv ?: return
+        try { pg.docStart?.remove() } catch (e: Exception) { }
+        pg.docStart = null
         val js = docStartJs()
         if (js.isEmpty()) return
         if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
             try {
-                docStartHandler = WebViewCompat.addDocumentStartJavaScript(webView, js, setOf("*"))
+                pg.docStart = WebViewCompat.addDocumentStartJavaScript(wv, js, setOf("*"))
             } catch (e: Exception) {
                 logEvent(this, "skrip awal dokumen gagal: " + e.javaClass.simpleName)
             }
         }
+    }
+
+    // Pengaturan GPC/sidik jari berubah: berlaku di semua page yang aktif (page hibernasi memasangnya saat dihidupkan)
+    private fun applyDocStartAll() {
+        pages.forEach { if (it.wv != null) applyDocStart(it) }
     }
 
     // Saklar utama pemblokir iklan: mati = tidak ada permintaan/jendela yang diblokir dan CSS penyembunyi iklan tidak dipasang
@@ -281,16 +320,16 @@ class MainActivity : AppCompatActivity() {
         refreshSettingsSheet()
     }
 
-    private fun isAd(host: String?): Boolean {
+    private fun isAd(host: String?, pg: Page = curPage): Boolean {
         if (!adBlockOn()) return false
-        if (host.isNullOrEmpty() || isFirstParty(host)) return false
+        if (host.isNullOrEmpty() || isFirstParty(host, pg)) return false
         return sharedRules.isBlocked(host)
     }
 
     // Untuk jendela popup dan pengalihan otomatis: aturan $popup ikut berlaku
-    private fun isPopupAd(host: String?): Boolean {
+    private fun isPopupAd(host: String?, pg: Page = curPage): Boolean {
         if (!adBlockOn()) return false
-        if (host.isNullOrEmpty() || isFirstParty(host)) return false
+        if (host.isNullOrEmpty() || isFirstParty(host, pg)) return false
         return sharedRules.isBlocked(host) || sharedRules.isPopupBlocked(host)
     }
 
@@ -408,6 +447,8 @@ class MainActivity : AppCompatActivity() {
     LoginSupport.save()
     autoScroller.stop()
     saveReadingPosition()
+    curPage.lastActive = System.currentTimeMillis()
+    persistPages()
     // Hentikan pemrosesan tambahan WebView (video/audio/timer halaman) saat aplikasi tidak di layar
     if (!webViewDead) webView.onPause()
     }
@@ -415,6 +456,9 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         if (!webViewDead) webView.onResume()
+        // periksa page yang lama tidak dibuka (hibernasi / tutup otomatis), lalu lanjut berkala
+        idleHandler.removeCallbacks(idleTick)
+        idleHandler.post(idleTick)
     }
 
     // Simpan halaman + posisi scroll terakhir supaya aplikasi dibuka lagi di tempat yang sama.
@@ -424,17 +468,27 @@ class MainActivity : AppCompatActivity() {
         if (webViewDead) return
         // pemulihan menunggu halaman selesai (maks 20 detik): posisi 0 sementara jangan menimpa posisi tersimpan
         if (restoreY > 0 && System.currentTimeMillis() - restoreAt < 20000) return
-        val u = webView.url ?: return
+        val pg = curPage
+        val wv = webView
+        val u = wv.url ?: return
         if (!u.startsWith("http://") && !u.startsWith("https://")) return
         // halaman berganti: alamat baru disimpan LANGSUNG dengan posisi 0 (posisi lama bukan milik halaman ini)
-        if (prefs.getString("last_page", null) != u) prefs.edit().putString("last_page", u).putInt("last_scroll", 0).apply()
-        webView.evaluateJavascript(SAVE_POS_JS) { r ->
-            // jawaban datang belakangan: abaikan bila halaman sudah berganti / WebView sudah mati
-            if (webViewDead || webView.url != u) return@evaluateJavascript
+        if (prefs.getString("last_page", null) != u) {
+            prefs.edit().putString("last_page", u).putInt("last_scroll", 0).apply()
+            pg.url = u
+            pg.scroll = 0
+            persistPages()
+        }
+        wv.evaluateJavascript(SAVE_POS_JS) { r ->
+            // jawaban datang belakangan: abaikan bila halaman/page sudah berganti / WebView sudah mati
+            if (webViewDead || pg !== curPage || wv.url != u) return@evaluateJavascript
             val y = r?.trim('"')?.toIntOrNull() ?: return@evaluateJavascript
             // -1 = halaman belum selesai atau pemulihan posisi sedang berjalan: posisi sementara tidak boleh menimpa
             if (y < 0) return@evaluateJavascript
             prefs.edit().putString("last_page", u).putInt("last_scroll", ReadingPos.clampY(y)).apply()
+            pg.url = u
+            pg.scroll = ReadingPos.clampY(y)
+            persistPages()
         }
     }
 
@@ -450,19 +504,6 @@ class MainActivity : AppCompatActivity() {
         if (savePending || webViewDead) return
         savePending = true
         saveHandler.postDelayed(saveRunnable, 2000)
-    }
-
-    // Buka halaman terakhir (kalau masih satu situs dengan alamat web yang dipilih), kalau tidak ke halaman awal
-    private fun resumeOrLoad() {
-        val last = prefs.getString("last_page", null)
-        if (!last.isNullOrBlank() &&
-            baseDomain(Uri.parse(last).host) == baseDomain(Uri.parse(currentUrl).host)) {
-            restoreY = ReadingPos.clampY(prefs.getInt("last_scroll", 0))
-            restoreUrl = last
-            restoreAt = System.currentTimeMillis()
-            firstLoad = true
-            webView.loadUrl(last)
-        } else load()
     }
 
     private fun preloadOn() = prefs.getBoolean("preload", true)
@@ -491,7 +532,6 @@ class MainActivity : AppCompatActivity() {
             ", kosmetik " + (if (prefs.getBoolean("cosmetic", false)) "ON" else "OFF") + ") " + ramSnapshot(this))
         // Public Suffix List hasil unduhan (bila ada) dimuat sebelum ada keputusan "situs yang sama"
         PublicSuffix.loadFromFile(File(filesDir, "psl.dat"))
-        configBase = baseDomain(Uri.parse(currentUrl).host)
         setContentView(R.layout.activity_main)
         goFullscreen()
 
@@ -511,17 +551,62 @@ class MainActivity : AppCompatActivity() {
             insets
      }
 
-        webView = findViewById(R.id.webView)
+        pageHost = findViewById(R.id.pageHost)
         swipe = findViewById(R.id.swipe)
-        LoginSupport.setup(webView)
-        webView.setBackgroundColor(Color.BLACK)
         progress = findViewById(R.id.progress)
-        // Tiga tombol setengah lonjong di tepi kanan: Menu, Penyesuaian warna, Gulir
+        // Daftar page dimuat dari penyimpanan (semua hibernasi); hanya page terakhir yang dibuka yang dibuatkan WebView
+        restorePages()
+        webView = createWebView(curPage)
+        pageHost.addView(webView, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        // Tombol setengah lonjong di tepi kanan: Menu, Penyesuaian warna, Gulir, Page (bila fitur Page menyala)
         val sideTools = findViewById<LinearLayout>(R.id.menuBtn)
-        QuickTools(sideTools, { showMenu() }, { showColorFilterSheet(this, webView, prefs) }, { showScrollPopup() })
+        quickTools = QuickTools(sideTools, { showMenu() }, { showColorFilterSheet(this, webView, prefs) }, { showScrollPopup() }, { showPages() })
+        refreshPageButton()
         fabCtl = FabController(webView, sideTools, { pickerActive }, { prefs.getBoolean("edge_on", true) }, { autoScroller.stop() }, { scheduleSave() }, { edgeSpeed() }, { edgeFraction() })
 
-        webView.settings.apply {
+        // Tarik layar ke bawah (saat di paling atas halaman) untuk menyegarkan, seperti di peramban
+        val dpi = resources.displayMetrics.density
+        swipe.setColorSchemeColors(0xFF5B8CFF.toInt())
+        swipe.setProgressBackgroundColorSchemeColor(0xFF26282E.toInt())
+        swipe.setProgressViewOffset(false, (16 * dpi).toInt(), (80 * dpi).toInt())
+        swipe.setOnChildScrollUpCallback { _, _ -> webView.scrollY > 0 || pickerActive || autoPanel.modeOn }
+        swipe.setOnRefreshListener {
+            if (onErrorPage()) retryFailed() else webView.reload()
+            swipe.postDelayed({ swipe.isRefreshing = false }, 15000)   // pengaman: spinner tidak boleh berputar selamanya
+        }
+        swipe.isEnabled = prefs.getBoolean("pull_refresh", true)
+
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                if (popupView != null) closePopup()
+                else if (webView.canGoBack()) webView.goBack() else finish()
+            }
+        })
+
+        refreshLists(false)
+
+        applyDns {
+            if (prefs.getBoolean("safe_once", false)) {
+                prefs.edit().remove("safe_once").apply()
+                webView.loadUrl("file:///android_asset/error.html")
+                return@applyDns
+            }
+            var restored = false
+            if (savedInstanceState != null && savedInstanceState.getLong("pageId", -1L) == curPage.id) {
+                firstLoad = true
+                restored = webView.restoreState(savedInstanceState) != null
+            }
+            if (!restored) {
+                if (curPage.home.isBlank() && curPage.url.isBlank()) askUrl(cancelable = false) else loadPageContent(curPage)
+            }
+        }
+        idleHandler.postDelayed(idleTick, 30_000L)
+    }
+
+    // Pasang pengaturan, klien halaman, dan pendengar ke WebView sebuah page (dipakai tiap page dibuat/dihidupkan)
+    @SuppressLint("SetJavaScriptEnabled")
+    private fun setupWebView(wv: WebView, pg: Page) {
+        wv.settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
             loadWithOverviewMode = true
@@ -537,23 +622,12 @@ class MainActivity : AppCompatActivity() {
             cacheMode = WebSettings.LOAD_DEFAULT
         
         }
-        applyColorFilter(webView, prefs) 
-        // Tarik layar ke bawah (saat di paling atas halaman) untuk menyegarkan, seperti di peramban
-        val dpi = resources.displayMetrics.density
-        swipe.setColorSchemeColors(0xFF5B8CFF.toInt())
-        swipe.setProgressBackgroundColorSchemeColor(0xFF26282E.toInt())
-        swipe.setProgressViewOffset(false, (16 * dpi).toInt(), (80 * dpi).toInt())
-        swipe.setOnChildScrollUpCallback { _, _ -> webView.scrollY > 0 || pickerActive || autoPanel.modeOn }
-        swipe.setOnRefreshListener {
-            if (onErrorPage()) retryFailed() else webView.reload()
-            swipe.postDelayed({ swipe.isRefreshing = false }, 15000)   // pengaman: spinner tidak boleh berputar selamanya
-        }
-        swipe.isEnabled = prefs.getBoolean("pull_refresh", true)
-        CookieManager.getInstance().setAcceptThirdPartyCookies(webView, !block3pOn())
-        applyDocStart()
-        webView.addJavascriptInterface(Bridge(), "Android")
+        applyColorFilter(wv, prefs)
+        CookieManager.getInstance().setAcceptThirdPartyCookies(wv, !block3pOn())
+        applyDocStart(pg)
+        wv.addJavascriptInterface(Bridge(pg), "Android")
 
-        webView.webViewClient = object : WebViewClient() {
+        wv.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(v: WebView, req: WebResourceRequest): Boolean {
                 val u = req.url
                 val scheme = u.scheme ?: return false
@@ -567,15 +641,15 @@ class MainActivity : AppCompatActivity() {
                     return true
                 }
                 if (!req.isForMainFrame) return false
-                if (isAd(u.host) || (!req.hasGesture() && isPopupAd(u.host))) return true
+                if (isAd(u.host, pg) || (!req.hasGesture() && isPopupAd(u.host, pg))) return true
                 val rewritten = rewriteUrl(u.toString())
                 if (rewritten != null) {
                     v.loadUrl(rewritten)
                     return true
                 }
                 // Utamakan HTTPS: situs yang disimpan memakai https tidak boleh turun ke http (dengan pengaman agar tidak berputar)
-                if (scheme == "http" && u.port == -1 && currentUrl.startsWith("https://") &&
-                    baseDomain(u.host) == baseDomain(Uri.parse(currentUrl).host)) {
+                if (scheme == "http" && u.port == -1 && pg.home.startsWith("https://") &&
+                    baseDomain(u.host) == pg.configBase) {
                     val now = System.currentTimeMillis()
                     if (!(u.toString() == lastUpgradeUrl && now - lastUpgradeAt < 5000)) {
                         lastUpgradeUrl = u.toString()
@@ -584,7 +658,7 @@ class MainActivity : AppCompatActivity() {
                         return true
                     }
                 }
-                if (!firstLoad && siteBase.isNotEmpty() && blockCross && baseDomain(u.host) != siteBase && !isLoginProvider(u.host)) {
+                if (!pg.firstLoad && pg.siteBase.isNotEmpty() && blockCrossFor(pg) && baseDomain(u.host) != pg.siteBase && !isLoginProvider(u.host)) {
                     Toast.makeText(this@MainActivity, "Pindah domain diblokir: " + u.host, Toast.LENGTH_SHORT).show()
                     return true
                 }
@@ -594,12 +668,12 @@ class MainActivity : AppCompatActivity() {
             override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
                 if (request != null && !request.isForMainFrame && trackerBlockOn()) {
                     val th = request.url.host
-                    if (!th.isNullOrEmpty() && !isFirstParty(th) && Trackers.isTracker(th)) {
+                    if (!th.isNullOrEmpty() && !isFirstParty(th, pg) && Trackers.isTracker(th)) {
                         trackerBlocked.incrementAndGet()
                         return WebResourceResponse("text/plain", "utf-8", ByteArrayInputStream(ByteArray(0)))
                     }
                 }
-                if (request != null && isAd(request.url.host)) {
+                if (request != null && isAd(request.url.host, pg)) {
                     adBlocked.incrementAndGet()
                     val p = request.url.path ?: ""
                     if (p.endsWith(".js")) {
@@ -613,8 +687,10 @@ class MainActivity : AppCompatActivity() {
 
             override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
                 if (url != null && !url.startsWith("file:")) {
-                    adBlocked.set(0)
-                    trackerBlocked.set(0)
+                    if (pg === curPage) {
+                        adBlocked.set(0)
+                        trackerBlocked.set(0)
+                    }
                     // WebView lama tanpa dukungan skrip awal dokumen: jalankan secepat mungkin (lebih lambat dari skrip halaman)
                     if (view != null && !WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
                         val js = docStartJs()
@@ -631,30 +707,37 @@ class MainActivity : AppCompatActivity() {
                 swipe.isRefreshing = false
                 if (url == null || url.startsWith("file:")) return
                 renderGoneCount = 0
-                failedUrl = null
-                logEvent(this@MainActivity, "halaman selesai " + ramSnapshot(this@MainActivity))
+                pg.failedUrl = null
+                // alamat dan judul page (untuk daftar Page dan lanjut membaca setelah hibernasi)
+                if (!ReadingPos.sameDocument(pg.url, url)) pg.scroll = 0
+                pg.url = url
+                val pt = v.title
+                if (!pt.isNullOrBlank()) pg.title = pt.trim().take(80)
+                persistPages()
+                refreshPagesSheet()
+                logEvent(this@MainActivity, "halaman selesai [page aktif " + pages.count { it.isLive } + "/" + pages.size + "] " + ramSnapshot(this@MainActivity))
                 if (url.startsWith("http://")) {
                     val hh = Uri.parse(url).host ?: ""
                     if (hh.isNotEmpty() && warnedHttp.add(hh))
                         Toast.makeText(this@MainActivity, "Situs ini memakai HTTP (tidak terenkripsi)", Toast.LENGTH_LONG).show()
                 }
-                if (firstLoad) {
+                if (pg.firstLoad) {
                     val h = Uri.parse(url).host
                     if (!h.isNullOrEmpty()) {
-                        siteBase = baseDomain(h)
-                        firstLoad = false
+                        pg.siteBase = baseDomain(h)
+                        pg.firstLoad = false
                     }
                 }
                 injectCss(v, true)
                 injectPreload(v)
                 // efek gambar (haluskan/ketajaman) tersimpan di pengaturan tapi hilang tiap pindah halaman
                 if (prefs.getInt("fx_sm", 0) > 0 || prefs.getInt("fx_sh", 0) > 0) applyImageFx(v, prefs)
-                if (restoreY > 0) {
-                    if (System.currentTimeMillis() - restoreAt > 20000) {
-                        restoreY = 0                                   // kedaluwarsa: halaman yang diharapkan tidak kunjung selesai
-                    } else if (ReadingPos.sameDocument(url, restoreUrl)) {
-                        val y = restoreY                               // hanya untuk halaman yang posisinya disimpan
-                        restoreY = 0
+                if (pg.restoreY > 0) {
+                    if (System.currentTimeMillis() - pg.restoreAt > 20000) {
+                        pg.restoreY = 0                                // kedaluwarsa: halaman yang diharapkan tidak kunjung selesai
+                    } else if (ReadingPos.sameDocument(url, pg.restoreUrl)) {
+                        val y = pg.restoreY                            // hanya untuk halaman yang posisinya disimpan
+                        pg.restoreY = 0
                         restoreScroll(v, y)
                     }                                                  // alamat lain (mis. halaman perantara): tunggu yang cocok
                 }
@@ -666,7 +749,7 @@ class MainActivity : AppCompatActivity() {
                     logEvent(this@MainActivity, "gagal memuat halaman: kode " + err.errorCode + " " + err.description)
                     swipe.isRefreshing = false
                     val u = req.url.toString()
-                    if (u.startsWith("http://") || u.startsWith("https://")) failedUrl = u
+                    if (u.startsWith("http://") || u.startsWith("https://")) pg.failedUrl = u
                     // kode galat + penanda DNS kustom dikirim ke halaman error (hanya angka/flag, bukan alamat)
                     v.loadUrl("file:///android_asset/error.html?c=" + err.errorCode + (if (dnsUrl() != null) "&d=1" else ""))
                 }
@@ -690,8 +773,13 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        webView.webChromeClient = object : WebChromeClient() {
+        wv.webChromeClient = object : WebChromeClient() {
+            override fun onReceivedTitle(v: WebView?, title: String?) {
+                if (!title.isNullOrBlank()) pg.title = title.trim().take(80)
+            }
+
             override fun onProgressChanged(v: WebView, p: Int) {
+                if (pg !== curPage) return
                 progress.visibility = if (p in 1..99) View.VISIBLE else View.GONE
                 progress.progress = p
             }
@@ -705,7 +793,7 @@ class MainActivity : AppCompatActivity() {
 override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Boolean, resultMsg: Message?): Boolean {
     if (!isUserGesture || resultMsg == null) return false
     val transport = resultMsg.obj as WebView.WebViewTransport
-    if (popupBlockOn() && blockCross) {
+    if (popupBlockOn() && blockCrossFor(pg)) {
         val temp = WebView(this@MainActivity)
         val ui = android.os.Handler(android.os.Looper.getMainLooper())
         var dead = false
@@ -733,8 +821,8 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
                     attachPopup(temp)
                     return false
                 }
-                if (baseDomain(u.host) == siteBase && !isPopupAd(u.host)) {
-                    webView.loadUrl(u.toString())
+                if (baseDomain(u.host) == pg.siteBase && !isPopupAd(u.host, pg)) {
+                    wv.loadUrl(u.toString())
                 } else {
                     Toast.makeText(this@MainActivity, "Popup diblokir", Toast.LENGTH_SHORT).show()
                 }
@@ -771,7 +859,7 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
             }
         }
 
-        webView.setDownloadListener { url, _, _, _, _ ->
+        wv.setDownloadListener { url, _, _, _, _ ->
             val ds = Uri.parse(url).scheme
             if (ds != "http" && ds != "https") {
                 Toast.makeText(this, "Jenis unduhan ini tidak didukung", Toast.LENGTH_SHORT).show()
@@ -783,31 +871,371 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
                 Toast.makeText(this, "Tidak ada aplikasi untuk membuka unduhan ini", Toast.LENGTH_SHORT).show()
             }
         }
+    }
 
-        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
-            override fun handleOnBackPressed() {
-                if (popupView != null) closePopup()
-                else if (webView.canGoBack()) webView.goBack() else finish()
-            }
-        })
+    // Buat WebView untuk sebuah page (belum dimuat dan belum dipasang ke layar)
+    private fun createWebView(pg: Page): WebView {
+        val wv = WebView(this)
+        pg.wv = wv
+        pg.hibernatedAt = 0L
+        LoginSupport.setup(wv)
+        wv.setBackgroundColor(Color.BLACK)
+        setupWebView(wv, pg)
+        return wv
+    }
 
-        refreshLists(false)
+    // ---------- Page (tab) ----------
+    private fun pagesOn() = prefs.getBoolean("pages_on", true)
 
-        applyDns {
-            if (prefs.getBoolean("safe_once", false)) {
-                prefs.edit().remove("safe_once").apply()
-                webView.loadUrl("file:///android_asset/error.html")
-                return@applyDns
+    private val idleHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val idleTick = object : Runnable {
+        override fun run() {
+            idleCheck()
+            idleHandler.postDelayed(this, 30_000L)
+        }
+    }
+
+    private fun persistPages() {
+        if (!::curPage.isInitialized) return
+        PageStore.save(prefs, pages, curPage.id)
+    }
+
+    // Muat daftar page (semua hibernasi). Tanpa data tersimpan: page pertama dibuat dari alamat dan posisi baca lama.
+    private fun restorePages() {
+        val (saved, activeId) = PageStore.load(prefs)
+        pages.clear()
+        pages.addAll(saved)
+        if (pages.isEmpty()) {
+            val p = Page(1L)
+            p.home = currentUrl
+            val last = prefs.getString("last_page", null)
+            if (!last.isNullOrBlank() && baseDomain(Uri.parse(last).host) == baseDomain(Uri.parse(currentUrl).host)) {
+                p.url = last
+                p.scroll = ReadingPos.clampY(prefs.getInt("last_scroll", 0))
             }
-            var restored = false
-            if (savedInstanceState != null) {
-                firstLoad = true
-                restored = webView.restoreState(savedInstanceState) != null
+            pages.add(p)
+            curPage = p
+        } else {
+            curPage = pages.firstOrNull { it.id == activeId } ?: pages[0]
+        }
+        curPage.hibernatedAt = 0L
+        curPage.lastActive = System.currentTimeMillis()
+        syncPrefsToPage(curPage)
+    }
+
+    // Pengaturan lama (url, last_page, last_scroll) selalu mengikuti page yang sedang dibuka
+    private fun syncPrefsToPage(p: Page) {
+        val e = prefs.edit().putString("url", p.home)
+        if (p.url.isNotBlank()) e.putString("last_page", p.url).putInt("last_scroll", p.scroll)
+        else e.remove("last_page").remove("last_scroll")
+        e.apply()
+    }
+
+    private fun isHttp(u: String?) = u != null && (u.startsWith("http://") || u.startsWith("https://"))
+
+    // Isi page: riwayat tersimpan (bila baru hibernasi) -> halaman terakhir + posisi baca -> alamat awal
+    private fun loadPageContent(p: Page) {
+        val wv = p.wv ?: return
+        val st = p.state
+        if (st != null) {
+            p.state = null
+            p.firstLoad = true
+            if (wv.restoreState(st) != null) return
+        }
+        val sameSite = p.home.isBlank() || baseDomain(Uri.parse(p.url).host) == p.configBase
+        if (isHttp(p.url) && sameSite) {
+            p.restoreY = ReadingPos.clampY(p.scroll)
+            p.restoreUrl = p.url
+            p.restoreAt = System.currentTimeMillis()
+            p.firstLoad = true
+            wv.loadUrl(p.url)
+        } else if (p.home.isNotBlank()) {
+            p.restoreY = 0
+            p.firstLoad = true
+            wv.loadUrl(p.home)
+        }
+    }
+
+    private fun destroyPageView(p: Page) {
+        val wv = p.wv ?: return
+        p.wv = null
+        try { p.docStart?.remove() } catch (e: Exception) { }
+        p.docStart = null
+        try {
+            (wv.parent as? ViewGroup)?.removeView(wv)
+            wv.stopLoading()
+            wv.destroy()
+        } catch (e: Exception) { }
+    }
+
+    // Catat alamat, judul, dan posisi baca sebuah page yang masih hidup
+    private fun capturePage(p: Page) {
+        val wv = p.wv ?: return
+        try {
+            val u = wv.url
+            if (isHttp(u)) {
+                if (!ReadingPos.sameDocument(p.url, u)) p.scroll = 0
+                p.url = u!!
             }
-            if (!restored) {
-                if (currentUrl.isBlank()) askUrl(cancelable = false) else resumeOrLoad()
+            val t = wv.title
+            if (!t.isNullOrBlank()) p.title = t.trim().take(80)
+            if (p.restoreY > 0 && System.currentTimeMillis() - p.restoreAt < 20000) return
+            wv.evaluateJavascript(SAVE_POS_JS) { r ->
+                val y = r?.trim('"')?.toIntOrNull() ?: return@evaluateJavascript
+                if (y < 0 || p.wv !== wv) return@evaluateJavascript
+                p.scroll = ReadingPos.clampY(y)
+                persistPages()
+            }
+        } catch (e: Exception) { }
+    }
+
+    // Pindah ke page lain (dihidupkan dulu bila hibernasi)
+    private fun activatePage(p: Page) {
+        if (webViewDead) return
+        if (p === curPage && p.wv != null) return
+        val prev = curPage
+        closePopup()
+        autoScroller.stop()
+        pickerActive = false
+        pickerToken = null
+        capturePage(prev)
+        val now = System.currentTimeMillis()
+        prev.lastActive = now
+        val wasLive = p.wv != null
+        val wv = p.wv ?: createWebView(p)
+        pageHost.removeAllViews()
+        pageHost.addView(wv, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        curPage = p
+        webView = wv
+        try { prev.wv?.onPause() } catch (e: Exception) { }
+        try { wv.onResume() } catch (e: Exception) { }
+        p.lastActive = now
+        p.hibernatedAt = 0L
+        autoScroller.webView = wv
+        fabCtl?.rebind(wv)
+        applyColorFilter(wv, prefs)
+        syncPrefsToPage(p)
+        progress.visibility = View.GONE
+        swipe.isRefreshing = false
+        adBlocked.set(0)
+        trackerBlocked.set(0)
+        if (!wasLive) loadPageContent(p)
+        else if (prefs.getInt("fx_sm", 0) > 0 || prefs.getInt("fx_sh", 0) > 0) applyImageFx(wv, prefs)
+        enforceLimit()
+        refreshPageButton()
+        persistPages()
+        refreshPagesSheet()
+        wv.requestFocus()
+    }
+
+    // Hibernasi: WebView dibuang (RAM bebas); alamat, judul, posisi baca, dan riwayat tetap disimpan
+    private fun hibernatePage(p: Page, reason: String) {
+        if (p === curPage) return
+        val wv = p.wv ?: return
+        try {
+            val u = wv.url
+            if (isHttp(u)) {
+                if (!ReadingPos.sameDocument(p.url, u)) p.scroll = 0
+                p.url = u!!
+            }
+            val t = wv.title
+            if (!t.isNullOrBlank()) p.title = t.trim().take(80)
+            val b = Bundle()
+            p.state = if (u != null && !u.startsWith("file:") && wv.saveState(b) != null && !b.isEmpty) b else null
+        } catch (e: Exception) {
+            p.state = null
+        }
+        destroyPageView(p)
+        p.hibernatedAt = System.currentTimeMillis()
+        logEvent(this, "page hibernasi (" + reason + "): aktif " + pages.count { it.isLive } + "/" + pages.size)
+        persistPages()
+        refreshPageButton()
+        refreshPagesSheet()
+    }
+
+    private fun closePage(p: Page) {
+        if (pages.size <= 1) {
+            Toast.makeText(this, "Minimal harus ada satu page", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val idx = pages.indexOf(p)
+        if (idx < 0) return
+        val wasCur = p === curPage
+        pages.remove(p)
+        destroyPageView(p)
+        if (wasCur) activatePage(pages[PagePolicy.nextAfterClose(idx, pages.size)])
+        persistPages()
+        refreshPageButton()
+        refreshPagesSheet()
+    }
+
+    private fun movePage(p: Page, dir: Int) {
+        val i = pages.indexOf(p)
+        val j = PagePolicy.moveTarget(i, dir, pages.size)
+        if (j < 0) return
+        java.util.Collections.swap(pages, i, j)
+        persistPages()
+    }
+
+    private fun openInNewPage(url: String) {
+        if (pages.size >= PagePolicy.MAX_TOTAL) {
+            Toast.makeText(this, "Jumlah page sudah maksimal (" + PagePolicy.MAX_TOTAL + "). Tutup beberapa dulu.", Toast.LENGTH_LONG).show()
+            return
+        }
+        val p = Page((pages.maxOfOrNull { it.id } ?: 0L) + 1L)
+        p.home = url
+        addSiteIfNew(url)
+        val at = pages.indexOf(curPage).let { if (it < 0) pages.size else it + 1 }
+        pages.add(at, p)
+        activatePage(p)
+    }
+
+    private fun askNewPage() {
+        val input = EditText(this).apply {
+            hint = "contoh: komiku.org"
+            inputType = InputType.TYPE_TEXT_VARIATION_URI
+        }
+        val box = FrameLayout(this).apply {
+            val m = (20 * resources.displayMetrics.density).toInt()
+            setPadding(m, m / 2, m, 0); addView(input)
+        }
+        val dlg = AlertDialog.Builder(this)
+            .setTitle("Page baru")
+            .setView(box)
+            .setPositiveButton("Buka", null)
+            .setNegativeButton("Batal", null)
+            .create()
+        dlg.setOnShowListener {
+            dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val url = normalize(input.text.toString())
+                if (url == null) input.error = "Alamat tidak valid"
+                else { dlg.dismiss(); openInNewPage(url) }
             }
         }
+        dlg.show()
+    }
+
+    private fun showPages() {
+        autoScroller.stop()
+        showPagesSheet(
+            this,
+            PagesUi(
+                pages = { pages.toList() },
+                currentId = { curPage.id },
+                liveCount = { pages.count { it.isLive } },
+                limit = { PageLimits.limit(this, prefs) },
+                recommended = PageLimits.recommended(this),
+                onSwitch = { p -> activatePage(p) },
+                onClose = { p -> closePage(p) },
+                onMove = { p, dir -> movePage(p, dir) },
+                onHibernate = { p -> hibernatePage(p, "manual") },
+                onNewPage = { askNewPage() },
+                onFromSites = { showSites() }
+            )
+        )
+    }
+
+    private fun refreshPageButton() {
+        quickTools?.setPageVisible(pagesOn())
+        quickTools?.setPageCount(pages.size)
+    }
+
+    // Jumlah page aktif tidak boleh melebihi batas: yang paling lama tidak dilihat dihibernasi. Peringatan bila di atas saran HP.
+    private fun enforceLimit() {
+        if (!pagesOn()) return
+        val lim = PageLimits.limit(this, prefs)
+        val la = LongArray(pages.size) { pages[it].lastActive }
+        val live = BooleanArray(pages.size) { pages[it].isLive }
+        for (i in PagePolicy.overLimit(la, live, pages.indexOf(curPage), lim)) hibernatePage(pages[i], "melebihi batas " + lim)
+        val rec = PageLimits.recommended(this)
+        val n = pages.count { it.isLive }
+        val now = System.currentTimeMillis()
+        if (PagePolicy.exceedsSafe(n, rec) && now - lastLimitWarnAt > 20000) {
+            lastLimitWarnAt = now
+            Toast.makeText(this, "Peringatan: " + n + " page aktif melebihi batas aman HP ini (" + rec +
+                "). HP bisa panas, aplikasi berat, bahkan crash.", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    // Berkala (30 dtk) dan saat aplikasi dibuka: hibernasi page yang lama tidak dibuka, tutup yang lama hibernasi
+    private fun idleCheck() {
+        if (!pagesOn() || webViewDead || !::curPage.isInitialized) return
+        val now = System.currentTimeMillis()
+        val cur = pages.indexOf(curPage)
+        val la = LongArray(pages.size) { pages[it].lastActive }
+        val live = BooleanArray(pages.size) { pages[it].isLive }
+        for (i in PagePolicy.idleToHibernate(la, live, cur, now, PageLimits.hibernateMs(this, prefs))) hibernatePage(pages[i], "lama tidak dibuka")
+        if (prefs.getBoolean("pages_autoclose", true)) {
+            val hz = LongArray(pages.size) { pages[it].hibernatedAt }
+            val lv = BooleanArray(pages.size) { pages[it].isLive }
+            val closing = PagePolicy.expiredToClose(hz, lv, cur, now, PageLimits.closeMs(prefs)).map { pages[it] }
+            if (closing.isNotEmpty()) {
+                pages.removeAll(closing.toSet())
+                logEvent(this, "page ditutup otomatis: " + closing.size)
+                persistPages()
+                refreshPageButton()
+                refreshPagesSheet()
+            }
+        }
+    }
+
+    private fun setPagesOn(on: Boolean) {
+        prefs.edit().putBoolean("pages_on", on).apply()
+        if (!on) {
+            // tanpa fitur Page hanya satu halaman yang hidup; page lain tetap tersimpan (hibernasi) bila fitur dinyalakan lagi
+            pages.filter { it !== curPage && it.isLive }.forEach { hibernatePage(it, "fitur Page dimatikan") }
+            dismissPagesSheet()
+        }
+        refreshPageButton()
+    }
+
+    private fun setPageLimit(v: Int) {
+        val rec = PageLimits.recommended(this)
+        val commit = {
+            prefs.edit().putInt("pages_limit", v).apply()
+            enforceLimit()
+            refreshSettingsSheet()
+        }
+        if (v > rec) {
+            AlertDialog.Builder(this)
+                .setTitle("Batas melebihi saran")
+                .setMessage("Saran untuk HP ini: " + rec + " page aktif. Membuka " + v + " page sekaligus bisa membuat HP panas, " +
+                    "aplikasi berat, dan membuat aplikasi crash. Page yang lama tidak dibuka tetap otomatis dihibernasi.\n\nTetap pakai " + v + "?")
+                .setPositiveButton("Tetap pakai") { _, _ -> commit() }
+                .setNegativeButton("Batal") { _, _ -> refreshSettingsSheet() }
+                .setOnCancelListener { refreshSettingsSheet() }
+                .show()
+        } else {
+            commit()
+        }
+    }
+
+    private fun pageSettingRows(): List<SettingRow> {
+        val rows = ArrayList<SettingRow>()
+        rows.add(SettingRow.Toggle("@page", "Page", "Buka beberapa halaman sekaligus seperti di peramban. Tombol Page muncul di bawah tombol Gulir", pagesOn()) { on ->
+            setPagesOn(on)
+        })
+        if (!pagesOn()) return rows
+        val rec = PageLimits.recommended(this)
+        rows.add(SettingRow.Level("@batas_page", "Batas page aktif", "Page yang boleh terbuka sekaligus; sisanya dihibernasi. Otomatis menyesuaikan RAM HP",
+            0, PagePolicy.HARD_MAX_LIVE, prefs.getInt("pages_limit", 0).coerceIn(0, PagePolicy.HARD_MAX_LIVE),
+            { v -> if (v == 0) "Otomatis (" + rec + ")" else if (v > rec) v.toString() + " ⚠" else v.toString() + " page" }
+        ) { v -> setPageLimit(v) })
+        rows.add(SettingRow.Level("💤", "Hibernasi setelah", "Page yang lama tidak dibuka dibekukan untuk menghemat RAM; dimuat ulang di posisi terakhir saat dibuka",
+            0, PagePolicy.HIB_MINUTES.size, prefs.getInt("pages_hib_idx", 0).coerceIn(0, PagePolicy.HIB_MINUTES.size),
+            { v -> PageLimits.formatHibernate(this, v) }
+        ) { v -> prefs.edit().putInt("pages_hib_idx", v).apply() })
+        rows.add(SettingRow.Toggle("🗑", "Tutup otomatis page hibernasi", "Page yang lama hibernasi tanpa dibuka ditutup sendiri (minimal satu page tersisa)",
+            prefs.getBoolean("pages_autoclose", true)) { on ->
+            prefs.edit().putBoolean("pages_autoclose", on).apply()
+        })
+        if (prefs.getBoolean("pages_autoclose", true)) {
+            rows.add(SettingRow.Level("⏳", "Tutup setelah hibernasi", "Lama page hibernasi sebelum ditutup otomatis",
+                1, PagePolicy.CLOSE_HOURS.size, prefs.getInt("pages_close_idx", 5).coerceIn(1, PagePolicy.CLOSE_HOURS.size),
+                { v -> PageLimits.formatClose(v) }
+            ) { v -> prefs.edit().putInt("pages_close_idx", v).apply() })
+        }
+        return rows
     }
 
     override fun onTrimMemory(level: Int) {
@@ -815,6 +1243,8 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
         // 10/15 = memori menipis saat aplikasi di layar; >= 60 = proses kandidat dibuang sistem
         if (level == 10 || level == 15 || level >= 60) {
             logEvent(this, "memori sistem menipis (onTrimMemory=" + level + ") " + ramSnapshot(this))
+            // memori menipis: page di latar dihibernasi supaya tidak ikut membuat aplikasi dimatikan sistem
+            if (pagesOn()) pages.filter { it !== curPage && it.isLive }.forEach { hibernatePage(it, "memori menipis") }
         }
     }
 
@@ -826,9 +1256,10 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
         fabCtl?.release()
         dismissMenuSheet()
         dismissSettingsSheet()
-        webView.stopLoading()
-        (webView.parent as? android.view.ViewGroup)?.removeView(webView)
-        webView.destroy()
+        idleHandler.removeCallbacksAndMessages(null)
+        dismissPagesSheet()
+        dismissSitesSheet()
+        for (p in pages) destroyPageView(p)
         DnsProxy.stop(this)   // hanya bila Activity ini pemilik proxy (Activity lama tidak boleh mematikan milik yang baru)
         super.onDestroy()
     }
@@ -1048,7 +1479,7 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
         return if (host.isNullOrBlank() || !host.contains(".")) null else s
     }
 
-    private fun askUrl(cancelable: Boolean) {
+    private fun askUrl(cancelable: Boolean, choose: Boolean = false) {
         val input = EditText(this).apply {
             hint = "contoh: komiku.org"
             inputType = InputType.TYPE_TEXT_VARIATION_URI
@@ -1070,7 +1501,11 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
             dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
                 val url = normalize(input.text.toString())
                 if (url == null) input.error = "Alamat tidak valid"
-                else { currentUrl = url; webView.clearHistory(); load(); dlg.dismiss() }
+                else {
+                    dlg.dismiss()
+                    // fitur Page menyala: tanya buka di page sekarang atau page baru
+                    if (choose && pagesOn()) askPageTarget(url) else openInCurrent(url)
+                }
             }
         }
         dlg.show()
@@ -1268,6 +1703,7 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
                         if (preloadOn()) injectPreload(webView)
                     },
                 ) + edgeScrollRows()),
+                SettingSection("Page", pageSettingRows()),
                 SettingSection("Privasi dan pemblokiran", listOf(
                     SettingRow.Toggle("@blok_iklan", "Pemblokir iklan", "Saklar utama: blokir iklan, pelacak, dan jendela iklan", adBlockOn()) { on ->
                         setAdBlock(on)
@@ -1300,7 +1736,7 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
                 SettingSection("Privasi lanjutan", listOf(
                     SettingRow.Toggle("@gpc", "Kontrol Privasi Global (GPC)", "Beri sinyal \"jangan jual data saya\" ke situs (lewat JavaScript)", gpcOn()) { on ->
                         prefs.edit().putBoolean("gpc", on).apply()
-                        applyDocStart()
+                        applyDocStartAll()
                     },
                     SettingRow.Toggle("@amp", "Perlindungan tautan AMP", "Lewati pengalihan Google, buka situs aslinya", ampOn()) { on ->
                         prefs.edit().putBoolean("amp_unwrap", on).apply()
@@ -1310,12 +1746,12 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
                     },
                     SettingRow.Toggle("@sidik", "Perlindungan sidik jari (dasar)", "Menyamarkan bahasa dan spesifikasi perangkat. Beberapa situs bisa tampil berbahasa Inggris", fpOn()) { on ->
                         prefs.edit().putBoolean("fingerprint", on).apply()
-                        applyDocStart()
+                        applyDocStartAll()
                         Toast.makeText(this, "Berlaku mulai halaman berikutnya", Toast.LENGTH_SHORT).show()
                     },
                     SettingRow.Toggle("@cookie", "Blokir cookie pihak ketiga", "Blokir pelacakan lintas situs; dapat mengganggu login", block3pOn()) { on ->
                         prefs.edit().putBoolean("block3p", on).apply()
-                        CookieManager.getInstance().setAcceptThirdPartyCookies(webView, !on)
+                        pages.forEach { pg -> pg.wv?.let { CookieManager.getInstance().setAcceptThirdPartyCookies(it, !on) } }
                         Toast.makeText(this, "Muat ulang halaman agar berlaku", Toast.LENGTH_SHORT).show()
                     },
                     SettingRow.Toggle("@https", "Paksa HTTPS", "Naikkan tautan http:// ke https:// (situs yang hanya mendukung HTTP tidak akan terbuka)", httpsForceOn()) { on ->
@@ -1351,7 +1787,7 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
             if (b.isNotEmpty() && !seen.containsKey(b)) seen[b] = u
         }
         add(currentUrl)
-        loadSites().forEach { add(it.second) }
+        loadSites().forEach { add(it.url) }
         seen.remove("google.com")   // Google ditampilkan tersendiri di paling atas (akun satu untuk semua situs)
         val out = ArrayList<AccountInfo>()
         val gUrl = "https://accounts.google.com/"
@@ -1587,51 +2023,123 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
             .show()
     }
 
-    private fun loadSites(): MutableList<Pair<String, String>> {
-        val out = mutableListOf<Pair<String, String>>()
+    private fun loadSites(): MutableList<Site> {
+        val out = mutableListOf<Site>()
         try {
             val arr = org.json.JSONArray(prefs.getString("sites", "[]"))
             for (i in 0 until arr.length()) {
                 val o = arr.getJSONObject(i)
-                out.add(o.getString("n") to o.getString("u"))
+                out.add(Site(o.getString("n"), o.getString("u"), o.optBoolean("p", false)))
             }
         } catch (e: Exception) { }
         return out
     }
 
-    private fun storeSites(list: List<Pair<String, String>>) {
+    private fun storeSites(list: List<Site>) {
         val arr = org.json.JSONArray()
-        list.forEach { arr.put(org.json.JSONObject().put("n", it.first).put("u", it.second)) }
+        list.forEach { arr.put(org.json.JSONObject().put("n", it.name).put("u", it.url).put("p", it.pinned)) }
         prefs.edit().putString("sites", arr.toString()).apply()
     }
 
     private fun addSiteIfNew(url: String) {
         if (url.isBlank()) return
         val list = loadSites()
-        if (list.any { it.second == url }) return
+        if (list.any { it.url == url }) return
         val host = Uri.parse(url).host?.removePrefix("www.") ?: url
-        list.add(host to url)
+        list.add(Site(host, url))
         storeSites(list)
     }
 
+    // Membuka situs tersimpan / alamat baru: bila fitur Page menyala, tanya page sekarang atau page baru
     private fun openSite(url: String) {
+        if (pagesOn()) askPageTarget(url) else openInCurrent(url)
+    }
+
+    private fun openInCurrent(url: String) {
         currentUrl = url
         webView.clearHistory()
         load()
+    }
+
+    private fun askPageTarget(url: String) {
+        val host = Uri.parse(url).host?.removePrefix("www.") ?: url
+        AlertDialog.Builder(this)
+            .setTitle("Buka " + host + " di")
+            .setItems(arrayOf("Page sekarang", "Page baru")) { _, i -> if (i == 1) openInNewPage(url) else openInCurrent(url) }
+            .setNegativeButton("Batal", null)
+            .show()
     }
 
     private fun showSites() {
         addSiteIfNew(currentUrl)
         showSitesSheet(
             this,
-            loadSites(),
-            currentUrl,
-            { url -> openSite(url) },
-            { url -> storeSites(loadSites().filter { it.second != url }) },
-            { askUrl(cancelable = true) },
-            { saveCurrentPage() },
-            { addSiteManually() }
+            SitesUi(
+                load = { loadSites() },
+                save = { storeSites(it) },
+                current = currentUrl,
+                grid = { prefs.getString("sites_view", "list") == "grid" },
+                setGrid = { g -> prefs.edit().putString("sites_view", if (g) "grid" else "list").apply() },
+                onOpen = { url -> openSite(url) },
+                onNew = { askUrl(cancelable = true, choose = true) },
+                onSaveCurrent = { saveCurrentPage() },
+                onAddManual = { addSiteManually() },
+                onEdit = { site, done -> editSite(site, done) }
+            )
         )
+    }
+
+    // Ubah nama/alamat situs tersimpan (tombol Edit di sheet Situs)
+    private fun editSite(site: Site, done: () -> Unit) {
+        val dp = resources.displayMetrics.density
+        val nameIn = EditText(this).apply {
+            hint = "Nama"
+            inputType = InputType.TYPE_CLASS_TEXT
+            maxLines = 1
+            setText(site.name)
+        }
+        val urlIn = EditText(this).apply {
+            hint = "Alamat"
+            inputType = InputType.TYPE_TEXT_VARIATION_URI
+            maxLines = 1
+            setText(site.url)
+        }
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            val m = (20 * dp).toInt()
+            setPadding(m, m / 2, m, 0)
+            addView(nameIn)
+            addView(urlIn)
+        }
+        val dlg = AlertDialog.Builder(this)
+            .setTitle("Ubah situs")
+            .setView(box)
+            .setPositiveButton("Simpan", null)
+            .setNegativeButton("Batal", null)
+            .create()
+        dlg.setOnShowListener {
+            dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val url = normalize(urlIn.text.toString())
+                if (url == null) {
+                    urlIn.error = "Alamat tidak valid"
+                    return@setOnClickListener
+                }
+                val list = loadSites()
+                val idx = list.indexOfFirst { it.url == site.url }
+                if (url != site.url && list.any { it.url == url }) {
+                    urlIn.error = "Alamat ini sudah ada di daftar"
+                    return@setOnClickListener
+                }
+                if (idx >= 0) {
+                    val name = nameIn.text.toString().trim().take(40).ifEmpty { Uri.parse(url).host?.removePrefix("www.") ?: url }
+                    list[idx] = Site(name, url, site.pinned)
+                    storeSites(list)
+                }
+                dlg.dismiss()
+                done()
+            }
+        }
+        dlg.show()
     }
 
     // Simpan alamat halaman yang sedang dibuka (bukan hanya alamat awal) ke daftar Situs
@@ -1642,12 +2150,12 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
             return
         }
         val list = loadSites()
-        if (list.any { it.second == u }) {
+        if (list.any { it.url == u }) {
             Toast.makeText(this, "Alamat ini sudah tersimpan", Toast.LENGTH_SHORT).show()
         } else {
             val title = webView.title?.trim().orEmpty()
             val name = if (title.isNotEmpty()) title.take(40) else (Uri.parse(u).host?.removePrefix("www.") ?: u)
-            list.add(name to u)
+            list.add(Site(name, u))
             storeSites(list)
             Toast.makeText(this, "Alamat tersimpan", Toast.LENGTH_SHORT).show()
         }
@@ -1688,8 +2196,8 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
                 } else {
                     val list = loadSites()
                     val name = nameIn.text.toString().trim().take(40).ifEmpty { Uri.parse(url).host?.removePrefix("www.") ?: url }
-                    val idx = list.indexOfFirst { it.second == url }
-                    if (idx >= 0) list[idx] = name to url else list.add(name to url)
+                    val idx = list.indexOfFirst { it.url == url }
+                    if (idx >= 0) list[idx] = Site(name, url, list[idx].pinned) else list.add(Site(name, url))
                     storeSites(list)
                     Toast.makeText(this, "Alamat tersimpan", Toast.LENGTH_SHORT).show()
                     dlg.dismiss()
@@ -1701,6 +2209,7 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
     }
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
+        outState.putLong("pageId", curPage.id)
         if (!webViewDead) webView.saveState(outState)
     }
 }

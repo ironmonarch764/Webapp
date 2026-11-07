@@ -22,7 +22,7 @@ import kotlin.math.abs
 //  - tarik dari tepi atas layar (saat jam/notifikasi muncul) = tombol menu ikut muncul sebentar
 // Setiap kali tombol menu muncul/hilang karena ketukan ada jeda (COOLDOWN_MS).
 class FabController(
-    private val webView: WebView,
+    private var webView: WebView,
     private val fab: View,
     private val isBusy: () -> Boolean,
     private val edgeOn: () -> Boolean,
@@ -44,7 +44,7 @@ class FabController(
     private val REVEAL_MS = 4000L       // lama tombol menu bertahan setelah bar ditarik
     // --------------------------------------------------
 
-    private val edgeScroller = EdgeScroller(webView)
+    private var edgeScroller = EdgeScroller(webView)
     private var shown = true
     private var lockUntil = 0L
     private var lastTouch = 0L
@@ -73,6 +73,21 @@ class FabController(
     // Tidak dipakai lagi (Android tidak melaporkan bar sementara ke aplikasi).
     // Dibiarkan kosong supaya baris lama di MainActivity tidak membuat build gagal.
     fun onSystemBars(visible: Boolean) {}
+
+    // Pindah page: lepas pendengar dari WebView lama, pasang ke WebView page baru
+    fun rebind(wv: WebView) {
+        if (wv === webView) return
+        edgeScroller.cancel()
+        try {
+            webView.setOnScrollChangeListener(null)
+            webView.setOnTouchListener(null)
+        } catch (e: Exception) { }
+        webView = wv
+        edgeScroller = EdgeScroller(wv)
+        topDown = false
+        multi = false
+        attach()
+    }
 
     // Dipanggil saat Activity dihancurkan supaya runnable tertunda tidak menahan view/Activity
     fun release() {

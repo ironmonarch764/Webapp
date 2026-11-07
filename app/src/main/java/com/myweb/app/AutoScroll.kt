@@ -23,7 +23,8 @@ private const val IMAGES_PENDING_JS =
 // jadi jarak per detik sama di 60/90/120/144 Hz.
 // Berhenti otomatis di dasar halaman: menunggu 2 detik (tinggi dokumen bisa bertambah), dan sampai 8 detik bila
 // halaman melaporkan gambar di ujung masih dimuat. Berhenti juga bila WebView sudah lepas dari layar (Activity ditutup).
-class AutoScroller(private val webView: WebView, prefs: SharedPreferences) {
+// webView bisa diganti saat pindah page (lihat MainActivity.activatePage)
+class AutoScroller(var webView: WebView, prefs: SharedPreferences) {
 
     var running = false
         private set

@@ -40,7 +40,12 @@ object Icons {
         "@https" to R.drawable.ik_https,
         "@dns" to R.drawable.ik_dns,
         "@diagnostik" to R.drawable.ik_diagnostik,
-        "@pengaturan" to R.drawable.ik_pengaturan
+        "@pengaturan" to R.drawable.ik_pengaturan,
+        "@edit" to R.drawable.ik_edit,
+        "@page" to R.drawable.ik_page,
+        "@batas_page" to R.drawable.ik_batas_page,
+        "@view_grid" to R.drawable.ik_view_grid,
+        "@view_list" to R.drawable.ik_view_list
     )
 
     fun has(key: String) = map.containsKey(key)
