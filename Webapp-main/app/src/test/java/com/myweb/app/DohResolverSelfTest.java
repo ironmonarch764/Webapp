@@ -122,6 +122,8 @@ public final class DohResolverSelfTest {
         concurrencyTests();
         connectTests();
         httpTransportTests();
+        wireTests();
+        wireHttpTests();
         System.out.println("DohResolverSelfTest: " + pass + " lulus, " + fail + " gagal");
         System.exit(fail == 0 ? 0 : 1);
     }
@@ -588,5 +590,274 @@ public final class DohResolverSelfTest {
         boolean thr = false;
         try { new DohResolver.UrlTransport(false).get("http://127.0.0.1:" + port + "/ok", 500, 1000); } catch (IOException e) { thr = true; }
         check("transport produksi menolak http", thr);
+    }
+
+    // ---------- format standar RFC 8484 (paket DNS biner) ----------
+    interface Script2 { DohResolver.Reply reply(String url, String accept) throws IOException; }
+
+    /** Transport uji yang hanya menerima jalur 4-argumen (dengan Accept), seperti transport produksi. */
+    static final class FakeTransport2 implements DohResolver.Transport {
+        final List<String> urls = Collections.synchronizedList(new ArrayList<String>());
+        final List<String> accepts = Collections.synchronizedList(new ArrayList<String>());
+        volatile Script2 script;
+        FakeTransport2(Script2 s) { script = s; }
+        public DohResolver.Reply get(String url, int t, int max) throws IOException { throw new IOException("jalur 3-argumen tidak boleh dipakai"); }
+        public DohResolver.Reply get(String url, String accept, int t, int max) throws IOException {
+            urls.add(url);
+            accepts.add(accept);
+            return script.reply(url, accept);
+        }
+        public void cancelAll() { }
+    }
+
+    static byte[] dnsParam(String url) {
+        int i = url.indexOf("dns=");
+        String v = url.substring(i + 4);
+        int amp = v.indexOf('&');
+        if (amp >= 0) v = v.substring(0, amp);
+        return java.util.Base64.getUrlDecoder().decode(v);
+    }
+
+    static byte[] bytes(int... v) { byte[] b = new byte[v.length]; for (int i = 0; i < v.length; i++) b[i] = (byte) v[i]; return b; }
+
+    static byte[] cat(byte[]... parts) {
+        java.io.ByteArrayOutputStream o = new java.io.ByteArrayOutputStream();
+        for (byte[] p : parts) o.write(p, 0, p.length);
+        return o.toByteArray();
+    }
+
+    /** Satu rekaman jawaban; nama = penunjuk kompresi ke pertanyaan (0xC00C). */
+    static byte[] rr(int type, long ttl, byte[] rdata) {
+        return cat(bytes(0xC0, 0x0C, type >> 8, type & 0xff, 0, 1, (int) (ttl >> 24) & 0xff, (int) (ttl >> 16) & 0xff,
+            (int) (ttl >> 8) & 0xff, (int) ttl & 0xff, rdata.length >> 8, rdata.length & 0xff), rdata);
+    }
+
+    static byte[] ipBytes(String ip) { return ip(ip).getAddress(); }
+
+    static byte[] qname(String host) {
+        java.io.ByteArrayOutputStream o = new java.io.ByteArrayOutputStream();
+        for (String l : host.split("\\.")) { o.write(l.length()); byte[] b = l.getBytes(StandardCharsets.US_ASCII); o.write(b, 0, b.length); }
+        o.write(0);
+        return o.toByteArray();
+    }
+
+    /** Paket jawaban lengkap: header + pertanyaan + rekaman. */
+    static byte[] wire(int rcode, String host, int qtype, byte[]... rrs) {
+        return cat(bytes(0, 0, 0x81, 0x80 | rcode, 0, 1, rrs.length >> 8, rrs.length & 0xff, 0, 0, 0, 0),
+            qname(host), bytes(qtype >> 8, qtype & 0xff, 0, 1), cat(rrs));
+    }
+
+    static DohResolver.Reply ok(byte[] b) { return new DohResolver.Reply(200, b); }
+
+    static DohResolver mkWire(DohResolver.Transport t, FakeSys s, Events ev, Clock c, int format, String url) {
+        return new DohResolver(url, t, s, pool, ev, c, format);
+    }
+
+    static void wireTests() throws Exception {
+        final String EP = "https://doh.test/dns-query";
+
+        // base64url sama dengan java.util.Base64 (tanpa isian) untuk semua panjang
+        java.util.Random rnd = new java.util.Random(7);
+        boolean b64ok = true;
+        for (int n = 0; n < 40; n++) {
+            byte[] x = new byte[n];
+            rnd.nextBytes(x);
+            String exp = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(x);
+            if (!exp.equals(DohResolver.b64url(x))) b64ok = false;
+        }
+        check("b64url identik dengan Base64 standar (panjang 0..39)", b64ok);
+
+        // paket kueri persis seperti RFC 1035: ID 0, RD, 1 pertanyaan, kelas IN
+        byte[] q = DohResolver.buildQuery("example.com", 1);
+        byte[] expQ = cat(bytes(0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0), bytes(7), "example".getBytes(), bytes(3), "com".getBytes(), bytes(0, 0, 1, 0, 1));
+        check("paket kueri A benar", Arrays.equals(q, expQ));
+        byte[] q6 = DohResolver.buildQuery("a.b.example.org", 28);
+        check("paket kueri AAAA: tipe 28 dan kelas IN di ujung", q6[q6.length - 4] == 0 && q6[q6.length - 3] == 28 && q6[q6.length - 2] == 0 && q6[q6.length - 1] == 1);
+
+        // jawaban A dua alamat + cache TTL
+        FakeSys sysNone = new FakeSys(null);
+        Clock c1 = new Clock();
+        FakeTransport2 t1 = new FakeTransport2((u, acc) -> ok(wire(0, "example.com", 1, rr(1, 120, ipBytes("93.184.216.34")), rr(1, 300, ipBytes("93.184.216.35")))));
+        DohResolver r1 = mkWire(t1, sysNone, null, c1, DohResolver.FORMAT_WIRE, EP);
+        List<InetAddress> l1 = r1.lookup("Example.com.", 4);
+        check("wire: dua alamat A terbaca", l1.size() == 2 && l1.get(0).getHostAddress().equals("93.184.216.34") && l1.get(1).getHostAddress().equals("93.184.216.35"));
+        check("wire: Accept = application/dns-message", "application/dns-message".equals(t1.accepts.get(0)));
+        check("wire: kueri di parameter dns= dan sama dengan paket yang diharapkan", Arrays.equals(dnsParam(t1.urls.get(0)), expQ));
+        check("wire: tanpa name=/type= di URL", !t1.urls.get(0).contains("name=") && !t1.urls.get(0).contains("type="));
+        r1.lookup("example.com", 4);
+        check("wire: cache dipakai (satu permintaan)", t1.urls.size() == 1);
+        c1.t.addAndGet(119_000);
+        r1.lookup("example.com", 4);
+        check("wire: cache masih berlaku sebelum TTL minimum (120 dtk)", t1.urls.size() == 1);
+        c1.t.addAndGet(2_000);
+        r1.lookup("example.com", 4);
+        check("wire: cache kedaluwarsa menurut TTL terkecil -> permintaan baru", t1.urls.size() == 2);
+        check("wire: tidak pernah memakai DNS sistem", sysNone.calls.get() == 0);
+
+        // AAAA
+        FakeTransport2 t2 = new FakeTransport2((u, acc) -> ok(wire(0, "v6.test", 28, rr(28, 60, ipBytes("2606:4700:4700::1111")))));
+        DohResolver r2 = mkWire(t2, sysNone, null, new Clock(), DohResolver.FORMAT_WIRE, EP);
+        List<InetAddress> l2 = r2.lookup("v6.test", 6);
+        byte[] sent2 = dnsParam(t2.urls.get(0));
+        check("wire: AAAA terbaca", l2.size() == 1 && l2.get(0) instanceof java.net.Inet6Address);
+        check("wire: kueri AAAA bertipe 28", sent2[sent2.length - 3] == 28);
+
+        // CNAME + A: TTL terkecil (CNAME 60) menentukan; rekaman CNAME dilewati sebagai alamat
+        Clock c3 = new Clock();
+        FakeTransport2 t3 = new FakeTransport2((u, acc) -> ok(wire(0, "www.cn.test", 1,
+            rr(5, 60, bytes(0xC0, 0x0C)), rr(1, 300, ipBytes("203.0.113.5")))));
+        DohResolver r3 = mkWire(t3, sysNone, null, c3, DohResolver.FORMAT_WIRE, EP);
+        List<InetAddress> l3 = r3.lookup("www.cn.test", 4);
+        check("wire: CNAME dilewati, A terbaca", l3.size() == 1 && l3.get(0).getHostAddress().equals("203.0.113.5"));
+        c3.t.addAndGet(61_000);
+        r3.lookup("www.cn.test", 4);
+        check("wire: TTL CNAME ikut dihitung", t3.urls.size() == 2);
+
+        // jawaban A pada permintaan AAAA diabaikan
+        FakeTransport2 t4 = new FakeTransport2((u, acc) -> ok(wire(0, "m.test", 28, rr(1, 60, ipBytes("203.0.113.5")))));
+        check("wire: rekaman A pada keluarga 6 diabaikan", throwsUnknown(mkWire(t4, new FakeSys(null), null, new Clock(), DohResolver.FORMAT_WIRE, EP), "m.test", 6));
+
+        // NXDOMAIN dan diblokir dihormati, tanpa DNS sistem
+        FakeSys s5 = new FakeSys(Collections.singletonList(ip("203.0.113.9")));
+        FakeTransport2 t5 = new FakeTransport2((u, acc) -> ok(wire(3, "gone.test", 1)));
+        DohResolver r5 = mkWire(t5, s5, null, new Clock(), DohResolver.FORMAT_WIRE, EP);
+        check("wire: NXDOMAIN dihormati", throwsUnknown(r5, "gone.test", 4) && s5.calls.get() == 0);
+        FakeTransport2 t6 = new FakeTransport2((u, acc) -> ok(wire(0, "ads.test", 1, rr(1, 60, ipBytes("0.0.0.0")))));
+        DohResolver r6 = mkWire(t6, s5, null, new Clock(), DohResolver.FORMAT_WIRE, EP);
+        boolean blocked = false;
+        try { r6.lookup("ads.test", 4); } catch (UnknownHostException e) { blocked = e.getMessage().contains("diblokir"); }
+        check("wire: 0.0.0.0 = diblokir oleh server DNS, tanpa cadangan", blocked && s5.calls.get() == 0);
+        FakeTransport2 t7 = new FakeTransport2((u, acc) -> ok(wire(2, "bad.test", 1)));
+        check("wire: SERVFAIL dihormati", throwsUnknown(mkWire(t7, s5, null, new Clock(), DohResolver.FORMAT_WIRE, EP), "bad.test", 4) && s5.calls.get() == 0);
+        FakeTransport2 t8 = new FakeTransport2((u, acc) -> ok(wire(0, "empty.test", 1)));
+        check("wire: tanpa jawaban = tidak ada alamat, tanpa cadangan", throwsUnknown(mkWire(t8, s5, null, new Clock(), DohResolver.FORMAT_WIRE, EP), "empty.test", 4) && s5.calls.get() == 0);
+
+        // paket rusak -> kegagalan transport -> cadangan sistem (satu kali)
+        byte[] good = wire(0, "cut.test", 1, rr(1, 60, ipBytes("203.0.113.5")));
+        byte[][] broken = {
+            Arrays.copyOf(good, good.length - 2),                           // rdata terpotong
+            Arrays.copyOf(good, 20),                                         // terpotong di pertanyaan
+            cat(bytes(0, 0, 0x81, 0x80, 0, 1, 0, 1, 0, 0, 0, 0), bytes(0x80, 1, 2)),   // label tidak sah (bit atas 10)
+            cat(Arrays.copyOf(good, good.length - 6), bytes(0, 3, 1, 2, 3, 4)),   // rdlen A bukan 4 -> alamat tidak sah
+            "<html>error</html>".getBytes(),                                 // bukan paket DNS
+            "{\"Status\":0}".getBytes(),                                     // JSON, bukan paket DNS
+            new byte[0]
+        };
+        for (int i = 0; i < broken.length; i++) {
+            final byte[] body = broken[i];
+            FakeSys sb = new FakeSys(Collections.singletonList(ip("203.0.113.9")));
+            DohResolver rb = mkWire(new FakeTransport2((u, acc) -> ok(body)), sb, null, new Clock(), DohResolver.FORMAT_WIRE, EP);
+            List<InetAddress> rl = rb.lookup("cut.test", 4);
+            check("wire: paket rusak #" + i + " -> cadangan sistem", sb.calls.get() == 1 && rl.get(0).getHostAddress().equals("203.0.113.9"));
+        }
+        // paket tanpa bit QR (kueri, bukan jawaban) ditolak
+        byte[] noQr = good.clone();
+        noQr[2] = 0x01;
+        FakeSys sq = new FakeSys(Collections.singletonList(ip("203.0.113.9")));
+        mkWire(new FakeTransport2((u, acc) -> ok(noQr)), sq, null, new Clock(), DohResolver.FORMAT_WIRE, EP).lookup("cut.test", 4);
+        check("wire: tanpa bit QR ditolak", sq.calls.get() == 1);
+
+        // jaminan: alamat dari rdata tidak pernah diperlakukan sebagai nama (tidak ada kebocoran ke DNS sistem)
+        check("wire: probe berfungsi", mkWire(new FakeTransport2((u, acc) -> ok(wire(0, "example.com", 1, rr(1, 60, ipBytes("93.184.216.34"))))), sysNone, null, new Clock(), DohResolver.FORMAT_WIRE, EP).probe() == null);
+
+        // ---------- otomatis ----------
+        // server hanya JSON: percobaan standar ditolak 400 lalu JSON berhasil; sesudahnya langsung JSON
+        FakeSys sa = new FakeSys(null);
+        FakeTransport2 ta = new FakeTransport2((u, acc) -> u.contains("dns=") ? new DohResolver.Reply(400, new byte[0]) : json(aAnswer(0, "203.0.113.1", "60")));
+        DohResolver ra = mkWire(ta, sa, null, new Clock(), DohResolver.FORMAT_AUTO, EP);
+        check("auto: format awal belum diketahui", ra.formatName().startsWith("otomatis"));
+        check("auto: server JSON-saja berhasil", ra.lookup("one.test", 4).get(0).getHostAddress().equals("203.0.113.1"));
+        check("auto: urutan wire dulu lalu JSON (2 permintaan)", ta.urls.size() == 2 && ta.urls.get(0).contains("dns=") && ta.urls.get(1).contains("name=one.test"));
+        check("auto: Accept sesuai format", "application/dns-message".equals(ta.accepts.get(0)) && "application/dns-json".equals(ta.accepts.get(1)));
+        ra.lookup("two.test", 4);
+        check("auto: format JSON diingat (hanya 1 permintaan lagi)", ta.urls.size() == 3 && ta.urls.get(2).contains("name=two.test") && ra.formatName().equals("JSON") && sa.calls.get() == 0);
+
+        // server hanya standar: berhasil pada percobaan pertama, JSON tidak pernah dicoba
+        FakeTransport2 tb = new FakeTransport2((u, acc) -> u.contains("dns=") ? ok(wire(0, "w.test", 1, rr(1, 60, ipBytes("203.0.113.2")))) : new DohResolver.Reply(415, new byte[0]));
+        DohResolver rb2 = mkWire(tb, sa, null, new Clock(), DohResolver.FORMAT_AUTO, EP);
+        check("auto: server standar-saja berhasil", rb2.lookup("w.test", 4).get(0).getHostAddress().equals("203.0.113.2"));
+        check("auto: standar dicoba pertama dan diingat", tb.urls.size() == 1 && rb2.formatName().equals("standar"));
+
+        // alamat berakhiran /resolve: JSON dicoba lebih dulu
+        FakeTransport2 tc = new FakeTransport2((u, acc) -> u.contains("name=") ? json(aAnswer(0, "203.0.113.3", "60")) : new DohResolver.Reply(400, new byte[0]));
+        DohResolver rc = mkWire(tc, sa, null, new Clock(), DohResolver.FORMAT_AUTO, "https://dns.test/resolve");
+        rc.lookup("r.test", 4);
+        check("auto: /resolve mencoba JSON dulu (1 permintaan)", tc.urls.size() == 1 && tc.urls.get(0).contains("name=r.test"));
+
+        // server menjawab 200 dengan JSON walau diminta standar (mengabaikan dns=): beralih ke JSON
+        FakeTransport2 td = new FakeTransport2((u, acc) -> json(aAnswer(0, "203.0.113.4", "60")));
+        DohResolver rd = mkWire(td, sa, null, new Clock(), DohResolver.FORMAT_AUTO, EP);
+        check("auto: isi bukan paket DNS -> coba JSON", rd.lookup("j.test", 4).get(0).getHostAddress().equals("203.0.113.4") && rd.formatName().equals("JSON"));
+
+        // kedua format ditolak: cadangan sistem + pesan jelas
+        Events evBoth = new Events();
+        FakeSys sBoth = new FakeSys(Collections.singletonList(ip("203.0.113.9")));
+        FakeTransport2 te = new FakeTransport2((u, acc) -> new DohResolver.Reply(404, new byte[0]));
+        DohResolver re = mkWire(te, sBoth, evBoth, new Clock(), DohResolver.FORMAT_AUTO, EP);
+        re.lookup("none.test", 4);
+        check("auto: dua format ditolak -> cadangan sistem", sBoth.calls.get() == 1 && te.urls.size() == 2);
+        check("auto: pesan menyebut server tidak mendukung", evBoth.msgs.size() == 1 && evBoth.msgs.get(0).contains("tidak mendukung DoH standar maupun JSON"));
+        check("auto: pesan tanpa nama host", !evBoth.msgs.get(0).contains("none.test"));
+
+        // kegagalan jaringan TIDAK memicu pergantian format
+        FakeSys sn = new FakeSys(Collections.singletonList(ip("203.0.113.9")));
+        FakeTransport2 tn = new FakeTransport2((u, acc) -> { throw new java.net.SocketTimeoutException("x"); });
+        DohResolver rn = mkWire(tn, sn, null, new Clock(), DohResolver.FORMAT_AUTO, EP);
+        rn.lookup("slow.test", 4);
+        check("auto: waktu habis = 1 permintaan saja, format tetap belum diketahui", tn.urls.size() == 1 && sn.calls.get() == 1 && rn.formatName().startsWith("otomatis"));
+        FakeTransport2 t5xx = new FakeTransport2((u, acc) -> new DohResolver.Reply(503, new byte[0]));
+        DohResolver r5xx = mkWire(t5xx, new FakeSys(Collections.singletonList(ip("203.0.113.9"))), null, new Clock(), DohResolver.FORMAT_AUTO, EP);
+        r5xx.lookup("down.test", 4);
+        check("auto: HTTP 503 bukan salah format -> 1 permintaan saja", t5xx.urls.size() == 1);
+
+        // format tetap (WIRE) tidak pernah mencoba JSON
+        FakeTransport2 tw = new FakeTransport2((u, acc) -> new DohResolver.Reply(400, new byte[0]));
+        mkWire(tw, new FakeSys(Collections.singletonList(ip("203.0.113.9"))), null, new Clock(), DohResolver.FORMAT_WIRE, EP).lookup("fixed.test", 4);
+        check("wire tetap: tidak mencoba JSON", tw.urls.size() == 1 && tw.urls.get(0).contains("dns="));
+
+        // endpoint dengan ? memakai &
+        FakeTransport2 tq = new FakeTransport2((u, acc) -> ok(wire(0, "q.test", 1, rr(1, 60, ipBytes("203.0.113.6")))));
+        mkWire(tq, sysNone, null, new Clock(), DohResolver.FORMAT_WIRE, EP + "?x=1").lookup("q.test", 4);
+        check("wire: endpoint dengan ? memakai &dns=", tq.urls.get(0).startsWith(EP + "?x=1&dns="));
+
+        // konstruktor lama tetap hanya JSON
+        FakeTransport tj = new FakeTransport(u -> json(aAnswer(0, "203.0.113.7", "60")));
+        new DohResolver(EP, tj, sysNone, pool, null, new Clock()).lookup("legacy.test", 4);
+        check("konstruktor lama: JSON saja", tj.urls.size() == 1 && tj.urls.get(0).contains("name=legacy.test"));
+    }
+
+    // server HTTP lokal yang berbicara format standar: memeriksa Accept dan paket kueri sungguhan
+    static void wireHttpTests() throws Exception {
+        final AtomicInteger hits = new AtomicInteger();
+        final String[] lastAccept = new String[1];
+        HttpServer srv = HttpServer.create(new InetSocketAddress(InetAddress.getByName("127.0.0.1"), 0), 16);
+        srv.createContext("/dns-query", ex -> {
+            hits.incrementAndGet();
+            lastAccept[0] = ex.getRequestHeaders().getFirst("Accept");
+            String qs = ex.getRequestURI().getRawQuery();
+            if (qs == null || !qs.startsWith("dns=")) { ex.sendResponseHeaders(400, -1); ex.close(); return; }
+            byte[] qp = java.util.Base64.getUrlDecoder().decode(qs.substring(4));
+            // nama dari paket kueri: hanya melayani example.org dan example.com (yang dipakai probe)
+            byte[] qn = Arrays.copyOfRange(qp, 12, qp.length - 4);
+            boolean isExample = Arrays.equals(qn, qname("example.org")) || Arrays.equals(qn, qname("example.com"));
+            byte[] body = isExample ? wire(0, "example.org", 1, rr(1, 60, ipBytes("203.0.113.7"))) : wire(3, "other.test", 1);
+            ex.getResponseHeaders().add("Content-Type", "application/dns-message");
+            ex.sendResponseHeaders(200, body.length);
+            try (OutputStream o = ex.getResponseBody()) { o.write(body); }
+        });
+        srv.start();
+        String base = "http://127.0.0.1:" + srv.getAddress().getPort();
+        try {
+            FakeSys sys = new FakeSys(Collections.singletonList(ip("198.51.100.9")));
+            DohResolver r = new DohResolver(base + "/dns-query", new DohResolver.UrlTransport(true), sys, pool, null, System::currentTimeMillis, DohResolver.FORMAT_AUTO);
+            List<InetAddress> l = r.lookup("example.org", 4);
+            check("HTTP nyata standar: alamat benar", l.size() == 1 && l.get(0).getHostAddress().equals("203.0.113.7") && sys.calls.get() == 0);
+            check("HTTP nyata standar: header Accept dns-message", "application/dns-message".equals(lastAccept[0]));
+            check("HTTP nyata standar: format dikenali", r.formatName().equals("standar") && hits.get() == 1);
+            check("HTTP nyata standar: NXDOMAIN dihormati", throwsUnknown(r, "other.test", 4) && sys.calls.get() == 0);
+            check("HTTP nyata standar: probe", r.probe() == null);
+        } finally {
+            srv.stop(0);
+        }
     }
 }

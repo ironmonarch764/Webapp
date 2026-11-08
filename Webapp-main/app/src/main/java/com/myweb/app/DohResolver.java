@@ -39,7 +39,11 @@ import java.util.function.LongSupplier;
 import javax.net.ssl.SSLException;
 
 /**
- * Resolver DNS-over-HTTPS (format JSON: Cloudflare / Google / kustom) - Java murni, tanpa Android, supaya bisa diuji di JVM.
+ * Resolver DNS-over-HTTPS - Java murni, tanpa Android, supaya bisa diuji di JVM.
+ * Dua format didukung: JSON (Cloudflare / Google) dan STANDAR RFC 8484 (application/dns-message; Quad9, AdGuard, NextDNS,
+ * dll). Untuk alamat kustom format dipilih otomatis (FORMAT_AUTO): dicoba satu, bila server menolak formatnya (HTTP
+ * 400/404/405/406/415/501 atau isi bukan format itu) dicoba yang lain, lalu format yang berhasil diingat. Kegagalan jaringan
+ * tidak pernah memicu pergantian format.
  *
  * Aturan perilaku (satu aturan, konsisten):
  *  - Jawaban DNS yang VALID dari server pilihan pengguna (termasuk NXDOMAIN, "tidak ada alamat", SERVFAIL/REFUSED, alamat
@@ -55,6 +59,10 @@ public final class DohResolver {
     // ---------- antarmuka ----------
     public interface Transport {
         Reply get(String url, int timeoutMs, int maxBytes) throws IOException;
+        /** Seperti get tetapi dengan header Accept tertentu. Bawaan: abaikan accept (transport uji lama). */
+        default Reply get(String url, String accept, int timeoutMs, int maxBytes) throws IOException {
+            return get(url, timeoutMs, maxBytes);
+        }
         void cancelAll();
     }
 
@@ -73,8 +81,13 @@ public final class DohResolver {
     }
 
     /** Kegagalan transport / format: satu-satunya jenis kegagalan yang boleh memicu DNS sistem. */
-    static final class DohFailure extends IOException {
+    static class DohFailure extends IOException {
         DohFailure(String m) { super(m); }
+    }
+
+    /** Server menjawab, tetapi bukan dalam format yang diminta (boleh memicu percobaan format lain). */
+    static final class FormatMismatch extends DohFailure {
+        FormatMismatch(String m) { super(m); }
     }
 
     public static final SystemDns SYSTEM = host -> Arrays.asList(InetAddress.getAllByName(host));
@@ -90,6 +103,10 @@ public final class DohResolver {
     static final int MAX_ENTRIES = 512;
     static final int MAX_BODY = 64 * 1024;
 
+    public static final int FORMAT_AUTO = 0;
+    public static final int FORMAT_JSON = 1;
+    public static final int FORMAT_WIRE = 2;
+
     // ---------- keadaan ----------
     private final String endpoint;
     private final Transport transport;
@@ -97,6 +114,8 @@ public final class DohResolver {
     private final ExecutorService exec;
     private final Listener listener;
     private final LongSupplier clock;
+    private volatile int fmt;                 // format yang dipakai; FORMAT_AUTO = belum diketahui
+    private final boolean preferJson;         // urutan coba saat AUTO
 
     int dohTimeoutMs = 5000;
     int sysTimeoutMs = 8000;
@@ -128,19 +147,40 @@ public final class DohResolver {
         });
     private final Map<String, FutureTask<CacheEntry>> inflight = new ConcurrentHashMap<>();
 
+    /** Konstruktor lama (uji): hanya JSON. */
     DohResolver(String endpoint, Transport t, SystemDns s, ExecutorService exec, Listener l, LongSupplier clock) {
+        this(endpoint, t, s, exec, l, clock, FORMAT_JSON);
+    }
+
+    DohResolver(String endpoint, Transport t, SystemDns s, ExecutorService exec, Listener l, LongSupplier clock, int format) {
         this.endpoint = endpoint;
         this.transport = t;
         this.sys = s;
         this.exec = exec;
         this.listener = l;
         this.clock = clock;
+        this.fmt = (format == FORMAT_JSON || format == FORMAT_WIRE) ? format : FORMAT_AUTO;
+        String path = endpoint;
+        int q = path.indexOf('?');
+        if (q >= 0) path = path.substring(0, q);
+        this.preferJson = path.toLowerCase(java.util.Locale.ROOT).endsWith("/resolve");
     }
 
+    /** Alamat kustom: format dipilih otomatis. */
     public static DohResolver create(String endpoint, ExecutorService exec, Listener l) {
+        return create(endpoint, exec, l, FORMAT_AUTO);
+    }
+
+    public static DohResolver create(String endpoint, ExecutorService exec, Listener l, int format) {
         String err = validateEndpoint(endpoint);
         if (err != null) throw new IllegalArgumentException(err);
-        return new DohResolver(endpoint, new UrlTransport(false), SYSTEM, exec, l, System::currentTimeMillis);
+        return new DohResolver(endpoint, new UrlTransport(false), SYSTEM, exec, l, System::currentTimeMillis, format);
+    }
+
+    /** Nama format yang sedang dipakai (untuk diagnosa). */
+    public String formatName() {
+        int f = fmt;
+        return f == FORMAT_JSON ? "JSON" : f == FORMAT_WIRE ? "standar" : "otomatis (belum diketahui)";
     }
 
     // ---------- validasi endpoint ----------
@@ -405,12 +445,12 @@ public final class DohResolver {
         try {
             root = Json.parse(new String(body, StandardCharsets.UTF_8));
         } catch (IllegalArgumentException e) {
-            throw new DohFailure("respons bukan JSON DNS");
+            throw new FormatMismatch("respons bukan JSON DNS");
         }
-        if (!(root instanceof Map)) throw new DohFailure("respons bukan JSON DNS");
+        if (!(root instanceof Map)) throw new FormatMismatch("respons bukan JSON DNS");
         Map<String, Object> m = (Map<String, Object>) root;
         Object st = m.get("Status");
-        if (!(st instanceof Number)) throw new DohFailure("respons bukan JSON DNS");
+        if (!(st instanceof Number)) throw new FormatMismatch("respons bukan JSON DNS");
         Parsed p = new Parsed();
         p.status = ((Number) st).intValue();
         Object an = m.get("Answer");
@@ -441,7 +481,23 @@ public final class DohResolver {
         return p;
     }
 
-    private Parsed rawQuery(String host, int family) throws DohFailure {
+    private Reply fetchReply(String url, String accept) throws DohFailure {
+        try {
+            return transport.get(url, accept, dohTimeoutMs, MAX_BODY);
+        } catch (DohFailure f) {
+            throw f;
+        } catch (IOException e) {
+            throw new DohFailure(describe(e));
+        }
+    }
+
+    /** HTTP yang menandakan server tidak mengerti format ini -> boleh coba format lain. */
+    private static DohFailure httpFailure(int code) {
+        if (code == 400 || code == 404 || code == 405 || code == 406 || code == 415 || code == 501) return new FormatMismatch("HTTP " + code);
+        return new DohFailure("HTTP " + code);
+    }
+
+    private Parsed queryJson(String host, int family) throws DohFailure {
         String url;
         try {
             url = endpoint + (endpoint.indexOf('?') >= 0 ? "&" : "?") + "name=" + URLEncoder.encode(host, "UTF-8") +
@@ -449,16 +505,138 @@ public final class DohResolver {
         } catch (java.io.UnsupportedEncodingException e) {
             throw new DohFailure("encoding");
         }
-        Reply r;
-        try {
-            r = transport.get(url, dohTimeoutMs, MAX_BODY);
-        } catch (DohFailure f) {
-            throw f;
-        } catch (IOException e) {
-            throw new DohFailure(describe(e));
-        }
-        if (r.code != 200) throw new DohFailure("HTTP " + r.code);
+        Reply r = fetchReply(url, "application/dns-json");
+        if (r.code != 200) throw httpFailure(r.code);
         return parseAnswer(r.body, family);
+    }
+
+    private Parsed queryWire(String host, int family) throws DohFailure {
+        String url = endpoint + (endpoint.indexOf('?') >= 0 ? "&" : "?") + "dns=" + b64url(buildQuery(host, family == 4 ? 1 : 28));
+        Reply r = fetchReply(url, "application/dns-message");
+        if (r.code != 200) throw httpFailure(r.code);
+        return parseWire(r.body, family);
+    }
+
+    private Parsed rawQuery(String host, int family) throws DohFailure {
+        int f = fmt;
+        if (f == FORMAT_JSON) return queryJson(host, family);
+        if (f == FORMAT_WIRE) return queryWire(host, family);
+        // format belum diketahui: coba urutan yang disarankan, lalu yang lain bila server menolak formatnya
+        DohFailure first = null;
+        for (int k = 0; k < 2; k++) {
+            boolean json = (k == 0) == preferJson;
+            try {
+                Parsed p = json ? queryJson(host, family) : queryWire(host, family);
+                fmt = json ? FORMAT_JSON : FORMAT_WIRE;
+                return p;
+            } catch (FormatMismatch m) {
+                if (first == null) first = m;
+            }
+        }
+        throw new DohFailure("server tidak mendukung DoH standar maupun JSON (" + first.getMessage() + ")");
+    }
+
+    // ---------- format standar RFC 8484 (paket DNS biner) ----------
+    private static final String B64URL = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+    /** base64url tanpa isian (padding), tanpa java.util.Base64 (baru ada di API 26). */
+    static String b64url(byte[] b) {
+        StringBuilder sb = new StringBuilder((b.length * 4 + 2) / 3);
+        int i = 0;
+        for (; i + 2 < b.length; i += 3) {
+            int v = ((b[i] & 0xff) << 16) | ((b[i + 1] & 0xff) << 8) | (b[i + 2] & 0xff);
+            sb.append(B64URL.charAt((v >> 18) & 63)).append(B64URL.charAt((v >> 12) & 63))
+                .append(B64URL.charAt((v >> 6) & 63)).append(B64URL.charAt(v & 63));
+        }
+        int rem = b.length - i;
+        if (rem == 1) {
+            int v = (b[i] & 0xff) << 16;
+            sb.append(B64URL.charAt((v >> 18) & 63)).append(B64URL.charAt((v >> 12) & 63));
+        } else if (rem == 2) {
+            int v = ((b[i] & 0xff) << 16) | ((b[i + 1] & 0xff) << 8);
+            sb.append(B64URL.charAt((v >> 18) & 63)).append(B64URL.charAt((v >> 12) & 63)).append(B64URL.charAt((v >> 6) & 63));
+        }
+        return sb.toString();
+    }
+
+    /** Paket kueri DNS: ID 0 (disarankan RFC 8484 agar mudah di-cache), RD=1, satu pertanyaan kelas IN. host sudah dinormalkan. */
+    static byte[] buildQuery(String host, int qtype) {
+        ByteArrayOutputStream o = new ByteArrayOutputStream(host.length() + 18);
+        o.write(0); o.write(0);              // ID
+        o.write(0x01); o.write(0x00);        // flags: RD
+        o.write(0); o.write(1);              // QDCOUNT
+        for (int k = 0; k < 6; k++) o.write(0);   // AN/NS/AR = 0
+        for (String label : host.split("\\.")) {
+            byte[] lb = label.getBytes(StandardCharsets.US_ASCII);
+            o.write(lb.length);
+            o.write(lb, 0, lb.length);
+        }
+        o.write(0);
+        o.write(qtype >> 8); o.write(qtype & 0xff);
+        o.write(0); o.write(1);              // kelas IN
+        return o.toByteArray();
+    }
+
+    private static int u16(byte[] b, int p) { return ((b[p] & 0xff) << 8) | (b[p + 1] & 0xff); }
+
+    /** Lewati satu nama DNS (termasuk penunjuk kompresi) tanpa membacanya. Mengembalikan posisi sesudahnya. */
+    private static int skipName(byte[] b, int pos) throws DohFailure {
+        for (int guard = 0; guard < 130; guard++) {
+            if (pos >= b.length) throw new DohFailure("respons DNS terpotong");
+            int len = b[pos] & 0xff;
+            if (len == 0) return pos + 1;
+            if ((len & 0xC0) == 0xC0) {
+                if (pos + 2 > b.length) throw new DohFailure("respons DNS terpotong");
+                return pos + 2;
+            }
+            if ((len & 0xC0) != 0) throw new DohFailure("respons DNS rusak");
+            pos += 1 + len;
+        }
+        throw new DohFailure("respons DNS rusak");
+    }
+
+    /** Jawaban biner -> Parsed yang sama seperti versi JSON (status = RCODE, TTL minimum termasuk CNAME). */
+    private static Parsed parseWire(byte[] b, int family) throws DohFailure {
+        if (b.length < 12 || (b[2] & 0x80) == 0) throw new FormatMismatch("respons bukan paket DNS");
+        int qd = u16(b, 4);
+        int an = u16(b, 6);
+        if (qd > 1 || an > 512) throw new FormatMismatch("respons bukan paket DNS");
+        Parsed p = new Parsed();
+        p.status = b[3] & 0x0f;
+        int pos = 12;
+        for (int i = 0; i < qd; i++) {
+            pos = skipName(b, pos) + 4;
+            if (pos > b.length) throw new DohFailure("respons DNS terpotong");
+        }
+        int want = family == 4 ? 1 : 28;
+        int n = 0;
+        for (int i = 0; i < an; i++) {
+            pos = skipName(b, pos);
+            if (pos + 10 > b.length) throw new DohFailure("respons DNS terpotong");
+            int type = u16(b, pos);
+            int cls = u16(b, pos + 2);
+            long ttl = ((long) (b[pos + 4] & 0xff) << 24) | ((b[pos + 5] & 0xff) << 16) | ((b[pos + 6] & 0xff) << 8) | (b[pos + 7] & 0xff);
+            int rdlen = u16(b, pos + 8);
+            pos += 10;
+            if (pos + rdlen > b.length) throw new DohFailure("respons DNS terpotong");
+            int rdata = pos;
+            pos += rdlen;
+            if (++n > 64) break;
+            if (cls != 1) continue;
+            if (type != want && type != 5) continue;
+            p.ttlSec = p.ttlSec < 0 ? ttl : Math.min(p.ttlSec, ttl);
+            if (type != want) continue;
+            if (rdlen != (family == 4 ? 4 : 16)) throw new DohFailure("alamat tidak valid pada respons");
+            InetAddress a;
+            try {
+                a = InetAddress.getByAddress(Arrays.copyOfRange(b, rdata, rdata + rdlen));
+            } catch (UnknownHostException e) {
+                throw new DohFailure("alamat tidak valid pada respons");
+            }
+            p.rawCount++;
+            if (usable(a, family) && p.addrs.size() < 8) p.addrs.add(a);
+        }
+        return p;
     }
 
     static String describe(IOException e) {
@@ -669,7 +847,7 @@ public final class DohResolver {
 
     public String stats() {
         return "DoH ok=" + okCount.get() + ", gagal=" + failCount.get() + ", cadangan sistem=" + fallbackCount.get() +
-            ", cache=" + cache.size();
+            ", cache=" + cache.size() + ", format=" + formatName();
     }
 
     // ---------- transport HTTPS nyata ----------
@@ -682,6 +860,11 @@ public final class DohResolver {
 
         @Override
         public Reply get(String url, int timeoutMs, int maxBytes) throws IOException {
+            return get(url, "application/dns-json", timeoutMs, maxBytes);
+        }
+
+        @Override
+        public Reply get(String url, String accept, int timeoutMs, int maxBytes) throws IOException {
             URL u = new URL(url);
             if (!"https".equals(u.getProtocol()) && !allowPlain) throw new IOException("bukan https");
             HttpURLConnection c = (HttpURLConnection) u.openConnection();
@@ -689,7 +872,7 @@ public final class DohResolver {
             c.setReadTimeout(timeoutMs);
             c.setInstanceFollowRedirects(false);
             c.setUseCaches(false);
-            c.setRequestProperty("Accept", "application/dns-json");
+            c.setRequestProperty("Accept", accept);
             active.add(c);
             boolean ok = false;
             try {

@@ -1263,7 +1263,7 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
     private fun dnsUrl(): String? {
         val m = dnsMode()
         return when (m) {
-            "cloudflare", "google" -> DnsProxy.PRESETS[m]
+            "cloudflare", "google", "quad9" -> DnsProxy.PRESETS[m]
             "custom" -> prefs.getString("dns_custom", "")?.trim()?.takeIf { DnsProxy.validate(it) == null }
             else -> null
         }
@@ -1275,6 +1275,7 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
         val name = when (dnsMode()) {
             "cloudflare" -> "Cloudflare"
             "google" -> "Google"
+            "quad9" -> "Quad9"
             "custom" -> "Kustom"
             else -> "Sistem"
         }
@@ -1367,8 +1368,8 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
     }
 
     private fun showDnsDialog() {
-        val names = arrayOf("Sistem (bawaan HP)", "Cloudflare (1.1.1.1)", "Google (8.8.8.8)", "Kustom (alamat DoH)")
-        val keys = arrayOf("off", "cloudflare", "google", "custom")
+        val names = arrayOf("Sistem (bawaan HP)", "Cloudflare (1.1.1.1)", "Google (8.8.8.8)", "Quad9 (9.9.9.9)", "Kustom (alamat DoH)")
+        val keys = arrayOf("off", "cloudflare", "google", "quad9", "custom")
         val cur = keys.indexOf(prefs.getString("dns", "off")).coerceAtLeast(0)
         AlertDialog.Builder(this)
             .setTitle("DNS")
@@ -1392,7 +1393,7 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
             setPadding(m, m / 2, m, 0); addView(input)
         }
         val dlg = AlertDialog.Builder(this)
-            .setTitle("Alamat DoH (format JSON)")
+            .setTitle("Alamat DoH (standar atau JSON)")
             .setView(box)
             .setPositiveButton("Simpan", null)
             .setNegativeButton("Batal", null)
