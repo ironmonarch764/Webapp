@@ -11,6 +11,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Message
 import android.text.InputType
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
@@ -2135,6 +2136,19 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
                 showSites()
             }
         }
+    }
+
+    // Ketukan singkat di luar panel melayang menutupnya. UP diganti CANCEL supaya halaman/tombol di bawahnya tidak ikut
+    // terketuk; menggulir halaman dan sentuhan di dalam panel tidak terpengaruh.
+    override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        if (FloatingPanel.onTouch(ev)) {
+            val cancel = MotionEvent.obtain(ev)
+            cancel.action = MotionEvent.ACTION_CANCEL
+            val handled = super.dispatchTouchEvent(cancel)
+            cancel.recycle()
+            return handled
+        }
+        return super.dispatchTouchEvent(ev)
     }
 
     override fun onSaveInstanceState(outState: Bundle) {

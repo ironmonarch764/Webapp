@@ -61,4 +61,6 @@ dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.webkit:webkit:1.11.0")
     implementation("androidx.swiperefreshlayout:swiperefreshlayout:1.1.0")
+    // HTTP/2 untuk DoH: HttpURLConnection bawaan Android hanya HTTP/1.1, sedangkan Quad9 sejak 15 Des 2025 hanya menerima HTTP/2+
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
 }

@@ -63,6 +63,8 @@ public final class DohResolver {
         default Reply get(String url, String accept, int timeoutMs, int maxBytes) throws IOException {
             return get(url, timeoutMs, maxBytes);
         }
+        /** Keterangan singkat untuk diagnosa (mis. protokol HTTP yang terakhir dipakai). Kosong bila tidak ada. */
+        default String info() { return ""; }
         void cancelAll();
     }
 
@@ -172,9 +174,14 @@ public final class DohResolver {
     }
 
     public static DohResolver create(String endpoint, ExecutorService exec, Listener l, int format) {
+        return create(endpoint, exec, l, format, new UrlTransport(false));
+    }
+
+    /** Dengan transport sendiri (aplikasi memakai OkHttp agar HTTP/2 tersedia). */
+    public static DohResolver create(String endpoint, ExecutorService exec, Listener l, int format, Transport t) {
         String err = validateEndpoint(endpoint);
         if (err != null) throw new IllegalArgumentException(err);
-        return new DohResolver(endpoint, new UrlTransport(false), SYSTEM, exec, l, System::currentTimeMillis, format);
+        return new DohResolver(endpoint, t, SYSTEM, exec, l, System::currentTimeMillis, format);
     }
 
     /** Nama format yang sedang dipakai (untuk diagnosa). */
@@ -847,7 +854,8 @@ public final class DohResolver {
 
     public String stats() {
         return "DoH ok=" + okCount.get() + ", gagal=" + failCount.get() + ", cadangan sistem=" + fallbackCount.get() +
-            ", cache=" + cache.size() + ", format=" + formatName();
+            ", cache=" + cache.size() + ", format=" + formatName() +
+            (transport.info().isEmpty() ? "" : ", http=" + transport.info());
     }
 
     // ---------- transport HTTPS nyata ----------

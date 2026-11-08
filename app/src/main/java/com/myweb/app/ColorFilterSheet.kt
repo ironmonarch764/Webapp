@@ -129,7 +129,7 @@ fun showColorFilterSheet(a: Activity, webView: () -> WebView, prefs: SharedPrefe
     val dp = a.resources.displayMetrics.density
     fun px(v: Int) = (v * dp).toInt()
 
-    val d = FloatingPanel(a)
+    val d = FloatingPanel(a, key = "color")
     colorPanel = d
     d.onDismiss = { if (colorPanel === d) colorPanel = null }
 

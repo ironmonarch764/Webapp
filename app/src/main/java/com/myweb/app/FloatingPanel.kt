@@ -7,6 +7,7 @@ import android.graphics.drawable.GradientDrawable
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewConfiguration
 import android.view.ViewGroup
 import android.view.inputmethod.InputMethodManager
 import android.widget.FrameLayout
@@ -27,8 +28,14 @@ class MaxHeightScrollView(ctx: Context, private val maxPx: Int) : ScrollView(ctx
 // jadi halaman di belakangnya tetap kelihatan dan bisa disentuh.
 //  - Hanya satu panel melayang pada satu waktu (membuka yang baru menutup yang lama).
 //  - Tutup lewat tombol ✕, tombol Kembali, atau setelah memilih sesuatu (panggil dismiss()).
-//  - Bisa digeser: seret garis pegangan di bagian atas kartu.
-class FloatingPanel(private val a: Activity, bgColor: Int = Color.parseColor("#F01F2024")) {
+//  - Bisa digeser: seret garis pegangan di bagian atas kartu. Posisi terakhir diingat per jenis panel (key) dan
+//    dipakai lagi saat panel dibuka berikutnya, juga setelah aplikasi dibuka ulang.
+//  - Ketukan di luar kartu menutup panel (lihat onTouch, dipanggil dari Activity.dispatchTouchEvent).
+class FloatingPanel(
+    private val a: Activity,
+    bgColor: Int = Color.parseColor("#F01F2024"),
+    private val key: String = "default"
+) {
 
     companion object {
         private var current: FloatingPanel? = null
@@ -42,10 +49,66 @@ class FloatingPanel(private val a: Activity, bgColor: Int = Color.parseColor("#F
             c.dismiss()
             return true
         }
+
+        // --- ketukan di luar kartu ---
+        private var gestureOutside = false
+        private var downX = 0f
+        private var downY = 0f
+        private var downTime = 0L
+        private var moved = false
+
+        /**
+         * Dipanggil dari Activity.dispatchTouchEvent untuk SETIAP sentuhan, sebelum diteruskan.
+         * Mengembalikan true bila sentuhan ini adalah ujung (ACTION_UP) dari ketukan singkat di luar kartu: panel
+         * sudah ditutup, dan Activity harus mengganti UP itu dengan ACTION_CANCEL supaya halaman/tombol di bawahnya
+         * tidak ikut terketuk. Geseran (menggulir halaman), tahan lama, dan sentuhan di dalam kartu tidak menutup panel.
+         */
+        fun onTouch(ev: MotionEvent): Boolean {
+            val c = current
+            when (ev.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    gestureOutside = false
+                    if (c != null && c.isShowing && c.cancelable && !c.insideCard(ev.rawX, ev.rawY)) {
+                        gestureOutside = true
+                        downX = ev.rawX
+                        downY = ev.rawY
+                        downTime = ev.eventTime
+                        moved = false
+                    }
+                }
+                MotionEvent.ACTION_POINTER_DOWN -> moved = true
+                MotionEvent.ACTION_MOVE -> {
+                    if (gestureOutside && !moved && c != null) {
+                        val dx = ev.rawX - downX
+                        val dy = ev.rawY - downY
+                        if (dx * dx + dy * dy > c.slop * c.slop) moved = true
+                    }
+                }
+                MotionEvent.ACTION_CANCEL -> gestureOutside = false
+                MotionEvent.ACTION_UP -> {
+                    val was = gestureOutside
+                    gestureOutside = false
+                    if (was && !moved && c != null && c.isShowing &&
+                        ev.eventTime - downTime < ViewConfiguration.getLongPressTimeout()) {
+                        c.dismiss()
+                        return true
+                    }
+                }
+            }
+            return false
+        }
     }
 
     private val dp = a.resources.displayMetrics.density
     private fun px(v: Int) = (v * dp).toInt()
+    private val slop = ViewConfiguration.get(a).scaledTouchSlop
+    private val posPrefs = a.getSharedPreferences("floating_panel", Context.MODE_PRIVATE)
+
+    private fun insideCard(rawX: Float, rawY: Float): Boolean {
+        val loc = IntArray(2)
+        card.getLocationOnScreen(loc)
+        return rawX >= loc[0] && rawX <= loc[0] + card.width && rawY >= loc[1] && rawY <= loc[1] + card.height
+    }
 
     // Lebar kartu: hampir selebar layar di HP, maksimal 440dp di layar lebar
     val widthPx: Int = minOf(a.resources.displayMetrics.widthPixels - px(24), px(440))
@@ -98,6 +161,10 @@ class FloatingPanel(private val a: Activity, bgColor: Int = Color.parseColor("#F
                     card.translationY = baseY + (e.rawY - startY)
                     clampToScreen()
                 }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    // ingat posisi terakhir untuk pembukaan berikutnya
+                    posPrefs.edit().putFloat(key + "_x", card.translationX).putFloat(key + "_y", card.translationY).apply()
+                }
             }
             true
         }
@@ -142,9 +209,14 @@ class FloatingPanel(private val a: Activity, bgColor: Int = Color.parseColor("#F
                 bottomMargin = px(28)
             }
         )
+        // pakai posisi terakhir yang digeser (disesuaikan bila layar/ukuran panel berbeda)
+        val sx = posPrefs.getFloat(key + "_x", 0f)
+        val sy = posPrefs.getFloat(key + "_y", 0f)
+        card.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> clampToScreen() }
         card.alpha = 0f
-        card.translationY = px(36).toFloat()
-        card.animate().alpha(1f).translationY(0f).setDuration(180L).start()
+        card.translationX = sx
+        card.translationY = sy + px(36)
+        card.animate().alpha(1f).translationY(sy).setDuration(180L).start()
     }
 
     fun dismiss() {

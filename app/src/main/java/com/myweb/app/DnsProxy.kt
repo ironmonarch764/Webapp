@@ -53,7 +53,7 @@ object DnsProxy {
     fun probe(doh: String): String? {
         val err = DohResolver.validateEndpoint(doh)
         if (err != null) return err
-        return try { DohResolver.create(doh, pool, null, formatFor(doh)).probe() } catch (e: Exception) { "gagal menguji" }
+        return try { DohResolver.create(doh, pool, null, formatFor(doh), OkDohTransport()).probe() } catch (e: Exception) { "gagal menguji" }
     }
 
     fun stats(): String {
@@ -82,7 +82,7 @@ object DnsProxy {
         // konfigurasi DoH berubah -> resolver baru (cache lama ikut dibuang, permintaan lama dibatalkan)
         if (resolver == null || endpoint != doh) {
             val old = resolver
-            resolver = DohResolver.create(doh, pool, { m -> listener?.invoke(m) }, formatFor(doh))
+            resolver = DohResolver.create(doh, pool, { m -> listener?.invoke(m) }, formatFor(doh), OkDohTransport())
             endpoint = doh
             old?.close()
         }

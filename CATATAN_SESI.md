@@ -155,3 +155,17 @@ Belum diuji / sisa: lihat laporan akhir sesi (build Kotlin/APK, perangkat nyata,
 - Transport.get kini punya varian 4-argumen dengan Accept (default method: transport uji lama tetap jalan). Konstruktor 6-argumen lama = JSON saja (tes lama tidak berubah). stats() menampilkan format=...
 - DnsProxy.kt: preset baru "quad9" = https://dns.quad9.net/dns-query (format standar). Cloudflare/Google tetap JSON, alamat kustom AUTO. MainActivity: pilihan "Quad9 (9.9.9.9)" di dialog DNS, judul dialog kustom "Alamat DoH (standar atau JSON)".
 - DohResolverSelfTest: 260 lulus / 0 gagal (tambah 51: paket kueri/jawaban, kompresi nama, CNAME, TTL, NXDOMAIN/diblokir, paket rusak, otomatis, server HTTP lokal). Kotlin belum dikompilasi.
+
+## Panel melayang: posisi diingat + ketuk di luar menutup
+- FloatingPanel(a, bgColor, key): posisi terakhir yang digeser disimpan per jenis panel di SharedPreferences "floating_panel" (key: sites, pages, target, color, form) saat jari dilepas dari pegangan, dipakai lagi saat dibuka berikutnya (juga setelah aplikasi dibuka ulang) dan dijaga tetap di dalam layar.
+- Ketukan singkat di luar kartu menutup panel: MainActivity.dispatchTouchEvent memanggil FloatingPanel.onTouch(ev); bila itu ujung (UP) ketukan di luar (tanpa geser lewat batas touch slop, bukan tahan lama, bukan multi-sentuh) panel ditutup dan UP diganti ACTION_CANCEL supaya halaman/tombol di bawahnya tidak ikut terketuk. Menggulir halaman saat panel terbuka tetap bisa (panel tidak ikut tertutup). Panel cancelable=false (alamat awal wajib) tidak tertutup oleh ketukan luar.
+- Catatan perilaku: mengetuk tombol setengah lonjong lain saat panel terbuka hanya menutup panel (ketukan itu ditelan); ketuk sekali lagi untuk membukanya.
+- Kotak isian (Alamat web/Page baru/Ubah situs/Simpan alamat) juga tertutup oleh ketukan luar seperti AlertDialog dulu; isian yang belum disimpan hilang.
+- Belum dikompilasi (Kotlin).
+
+## Quad9 masih gagal: penyebab = HTTP/2 (OkHttp)
+- Quad9 sejak 15 Des 2025 mematikan DoH lewat HTTP/1.1 (quad9.net/news/blog/doh-http-1-1-retirement; docs.quad9.net/FAQs): klien wajib HTTP/2+. HttpURLConnection bawaan Android hanya HTTP/1.1 (pemahaman saya; belum diuji di perangkat), jadi Quad9 gagal apa pun format/alamatnya. Cloudflare/Google masih menerima HTTP/1.1.
+- Perbaikan: OkDohTransport.kt (baru) memakai OkHttp 4.12.0 (protokol HTTP_2 lalu HTTP_1_1, tanpa redirect, callTimeout = 2x timeout, sambungan dipakai ulang). Semua DoH (preset dan kustom) kini lewat transport ini. DohResolver.create(..., format, transport) menerima transport; Transport.info() (default kosong) -> stats() menampilkan "http=h2" / "http=http/1.1" di Info diagnosa. UrlTransport tetap untuk tes JVM.
+- build.gradle.kts: dependensi okhttp; proguard-rules.pro: -dontwarn okhttp3.internal.platform / conscrypt / bouncycastle / openjsse.
+- DohResolverSelfTest tetap 260 lulus / 0 gagal. OkDohTransport.kt BELUM dikompilasi (Kotlin) dan belum diuji ke server sungguhan.
+- Cara memastikan di HP: pilih Quad9, buka Info diagnosa, baris DNS harus menampilkan format=standar dan http=h2 tanpa "cadangan sistem" yang naik.

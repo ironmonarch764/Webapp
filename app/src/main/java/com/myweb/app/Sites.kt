@@ -53,7 +53,7 @@ fun dismissSitesSheet() {
 fun showSitesSheet(a: Activity, ui: SitesUi) {
     dismissSitesSheet()
     // Panel melayang (bukan dialog): halaman di belakang tetap kelihatan dan bisa disentuh
-    val d = FloatingPanel(a)
+    val d = FloatingPanel(a, key = "sites")
     sitesDialog = d
     d.onDismiss = { if (sitesDialog === d) sitesDialog = null }
     val dp = a.resources.displayMetrics.density

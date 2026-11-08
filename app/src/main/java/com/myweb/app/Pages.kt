@@ -182,7 +182,7 @@ fun refreshPagesSheet() {
 fun showPagesSheet(a: Activity, ui: PagesUi) {
     dismissPagesSheet()
     // Panel melayang (bukan dialog): halaman di belakang tetap kelihatan dan bisa disentuh
-    val d = FloatingPanel(a)
+    val d = FloatingPanel(a, key = "pages")
     pagesDialog = d
     d.onDismiss = {
         if (pagesDialog === d) { pagesDialog = null; pagesRender = null }
@@ -438,7 +438,7 @@ fun showPagesSheet(a: Activity, ui: PagesUi) {
 
 // Pilihan "buka di mana" (menggantikan dialog putih biasa): dua kartu besar, Page baru disorot
 fun showPageTargetSheet(a: Activity, url: String, info: String, onCurrent: () -> Unit, onNew: () -> Unit) {
-    val d = FloatingPanel(a)
+    val d = FloatingPanel(a, key = "target")
     val dp = a.resources.displayMetrics.density
     fun px(v: Int) = (v * dp).toInt()
     val match = ViewGroup.LayoutParams.MATCH_PARENT

@@ -36,7 +36,7 @@ fun showFormPanel(
     val match = ViewGroup.LayoutParams.MATCH_PARENT
     val wrap = ViewGroup.LayoutParams.WRAP_CONTENT
 
-    val d = FloatingPanel(a)
+    val d = FloatingPanel(a, key = "form")
     d.cancelable = cancelable
 
     val root = LinearLayout(a).apply {
