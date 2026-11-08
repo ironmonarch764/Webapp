@@ -1,0 +1,303 @@
+package com.myweb.app
+
+import android.annotation.SuppressLint
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
+import android.view.Choreographer
+import android.view.MotionEvent
+import android.view.View
+import android.view.ViewConfiguration
+import android.view.ViewGroup
+import android.view.animation.DecelerateInterpolator
+import android.webkit.WebView
+import kotlin.math.abs
+
+// Kontrol ketukan di halaman:
+//  - ketuk tepi KANAN layar = turun satu layar (animasi halus), bisa dimatikan lewat menu
+//  - ketuk tepi KIRI layar  = naik satu layar (animasi halus), bisa dimatikan lewat menu
+//    (hanya di bagian tengah-vertikal, supaya bar menu di atas/bawah situs tetap bisa diketuk)
+//  - ketuk tempat lain      = tombol menu muncul/hilang
+//  - scroll (arah apa pun)  = tombol menu menutup
+//  - tarik dari tepi atas layar (saat jam/notifikasi muncul) = tombol menu ikut muncul sebentar
+// Setiap kali tombol menu muncul/hilang karena ketukan ada jeda (COOLDOWN_MS).
+class FabController(
+    private var webView: WebView,
+    private val fab: View,
+    private val isBusy: () -> Boolean,
+    private val edgeOn: () -> Boolean,
+    private val onTouchDown: () -> Unit,
+    private val onScroll: () -> Unit = {},
+    private val edgeSpeed: () -> Float = { 2.0f },     // dp per milidetik (diatur di Pengaturan > Gulir)
+    private val edgeFraction: () -> Float = { 0.9f }   // jarak satu ketukan = bagian tinggi layar (diatur di Pengaturan > Gulir)
+) {
+    // ---- Pengaturan (ubah angkanya sesuai selera) ----
+    private val COOLDOWN_MS = 700L      // jeda tombol menu, milidetik
+    private val STAGGER_MS = 70L        // jeda antar tombol saat muncul/hilang bergantian
+    private val SIDE_ZONE = 0.09f       // lebar area ketuk kiri & kanan (9% lebar layar). 0f = matikan
+    private val SIDE_TOP = 0.15f        // area samping mulai dari 15% tinggi layar (sisakan bar atas situs)
+    private val SIDE_BOTTOM = 0.15f     // area samping berakhir 15% sebelum dasar (sisakan bar bawah situs)
+    private val RIGHT_DIR = 1           // ketuk tepi kanan: 1 = turun, -1 = naik
+    private val LEFT_DIR = 1           // ketuk tepi kiri: -1 = naik, 1 = turun (isi 1 agar dua sisi turun)
+    private val TOP_EDGE_DP = 40f       // tarikan dianggap dari tepi atas bila mulai di 40dp teratas
+    private val PULL_DP = 30f           // minimal geser ke bawah agar dianggap menarik bar
+    private val REVEAL_MS = 4000L       // lama tombol menu bertahan setelah bar ditarik
+    // --------------------------------------------------
+
+    private var edgeScroller = EdgeScroller(webView)
+    private var shown = true
+    private var lockUntil = 0L
+    private var lastTouch = 0L
+    private var revealUntil = 0L
+    private var shownBeforeReveal: Boolean? = null
+    private val density = webView.resources.displayMetrics.density
+    private val slop = ViewConfiguration.get(webView.context).scaledTouchSlop.toFloat()
+    // Keadaan sentuhan yang sedang berlangsung
+    private var downX = 0f
+    private var downY = 0f
+    private var downT = 0L
+    private var multi = false
+    private var topDown = false
+    private val handler = Handler(Looper.getMainLooper())
+    private val restore = Runnable {
+        val prev = shownBeforeReveal
+        shownBeforeReveal = null
+        if (prev == false) applyShown(false)
+    }
+
+    init {
+        attach()
+        playEntrance()
+    }
+
+    // Tidak dipakai lagi (Android tidak melaporkan bar sementara ke aplikasi).
+    // Dibiarkan kosong supaya baris lama di MainActivity tidak membuat build gagal.
+    fun onSystemBars(visible: Boolean) {}
+
+    // Pindah page: lepas pendengar dari WebView lama, pasang ke WebView page baru
+    fun rebind(wv: WebView) {
+        if (wv === webView) return
+        edgeScroller.cancel()
+        try {
+            webView.setOnScrollChangeListener(null)
+            webView.setOnTouchListener(null)
+        } catch (e: Exception) { }
+        webView = wv
+        edgeScroller = EdgeScroller(wv)
+        topDown = false
+        multi = false
+        attach()
+    }
+
+    // Dipanggil saat Activity dihancurkan supaya runnable tertunda tidak menahan view/Activity
+    fun release() {
+        handler.removeCallbacksAndMessages(null)
+        edgeScroller.cancel()
+    }
+
+    // Ketukan/scroll biasa: tunduk pada jeda
+    private fun setShown(show: Boolean) {
+        if (show == shown) return
+        if (SystemClock.uptimeMillis() < lockUntil) return
+        applyShown(show)
+    }
+
+    // Mengubah keadaan tombol dengan animasi (tanpa memeriksa jeda), lalu memulai jeda baru
+    private fun applyShown(show: Boolean) {
+        if (show == shown) return
+        lockUntil = SystemClock.uptimeMillis() + COOLDOWN_MS
+        shown = show
+
+        val group = fab as? ViewGroup
+        if (group == null || group.childCount == 0) {
+            // satu tombol saja: menyelinap ke tepi kanan layar
+            val dist = (if (fab.width > 0) fab.width else (52 * webView.resources.displayMetrics.density).toInt()).toFloat()
+            if (show) {
+                fab.visibility = View.VISIBLE
+                fab.animate().alpha(1f).translationX(0f).setDuration(180).start()
+            } else {
+                fab.animate().alpha(0f).translationX(dist).setDuration(180)
+                    .withEndAction { if (!shown) fab.visibility = View.INVISIBLE }
+                    .start()
+            }
+            return
+        }
+        // beberapa tombol: muncul bergantian dari ATAS ke BAWAH, menghilang bergantian dari BAWAH ke ATAS
+        val n = group.childCount
+        if (show) fab.visibility = View.VISIBLE
+        for (i in 0 until n) {
+            val c = group.getChildAt(i)
+            c.animate().cancel()
+            if (show) {
+                c.animate().alpha(1f).translationX(0f)
+                    .setStartDelay(i * STAGGER_MS).setDuration(200).setInterpolator(DecelerateInterpolator()).start()
+            } else {
+                // tombol paling atas selesai paling akhir: setelah itu seluruh wadah disembunyikan agar tidak menangkap ketukan
+                val a = c.animate().alpha(0f).translationX(slideDist(c))
+                    .setStartDelay((n - 1 - i) * STAGGER_MS).setDuration(180).setInterpolator(DecelerateInterpolator())
+                if (i == 0) a.withEndAction { if (!shown) fab.visibility = View.INVISIBLE }
+                a.start()
+            }
+        }
+    }
+
+    private fun slideDist(c: View): Float =
+        (if (c.width > 0) c.width else (76 * webView.resources.displayMetrics.density).toInt()).toFloat()
+
+    // Saat aplikasi dibuka: tombol keluar satu per satu dari atas ke bawah
+    private fun playEntrance() {
+        val group = fab as? ViewGroup ?: return
+        for (i in 0 until group.childCount) {
+            val c = group.getChildAt(i)
+            c.alpha = 0f
+            c.translationX = slideDist(c)
+        }
+        fab.post {
+            if (!shown) return@post   // sudah disembunyikan sebelum sempat tampil: biarkan keadaan tersembunyi
+            for (i in 0 until group.childCount) {
+                group.getChildAt(i).animate().alpha(1f).translationX(0f)
+                    .setStartDelay(300L + i * STAGGER_MS).setDuration(220).setInterpolator(DecelerateInterpolator()).start()
+            }
+        }
+    }
+
+    // Bar sistem ditarik dari atas: tombol menu muncul REVEAL_MS lalu kembali ke keadaan semula
+    private fun reveal() {
+        if (shownBeforeReveal == null) shownBeforeReveal = shown
+        revealUntil = SystemClock.uptimeMillis() + REVEAL_MS
+        applyShown(true)
+        handler.removeCallbacks(restore)
+        handler.postDelayed(restore, REVEAL_MS)
+    }
+
+    // dir = 1 turun, -1 naik. Digerakkan native per frame (Choreographer + scrollBy) dengan kecepatan konstan,
+    // sama seperti auto-scroll, jadi tidak tersendat oleh JavaScript halaman dan tidak pelan-cepat-pelan.
+    private fun scrollPage(dir: Int) {
+        edgeScroller.scroll(dir, edgeFraction(), edgeSpeed())
+    }
+
+    // Titik (x, y) berada di area ketuk-tepi?
+    private fun inEdgeZone(x: Float, y: Float, w: Int, h: Int): Boolean {
+        if (!edgeOn() || SIDE_ZONE <= 0f) return false
+        val inBand = y > h * SIDE_TOP && y < h * (1f - SIDE_BOTTOM)
+        return inBand && (x > w * (1f - SIDE_ZONE) || x < w * SIDE_ZONE)
+    }
+
+    @SuppressLint("ClickableViewAccessibility")
+    private fun attach() {
+        // Pada ketukan beruntun di tepi, gulir yang sedang jalan dilanjutkan (jarak ditambah), bukan dibatalkan
+        // (batal hanya bila sentuhan jatuh di luar zona tepi, jari menyeret, atau multi-sentuh)
+        // Scroll ke arah mana pun = tutup tombol (hanya jika sedang disentuh/baru disentuh,
+        // dan tidak sedang masa tombol ditampilkan karena bar ditarik)
+        webView.setOnScrollChangeListener { _, _, scrollY, _, oldY ->
+            onScroll()
+            val now = SystemClock.uptimeMillis()
+            val recent = now - lastTouch < 1500
+            if (shown && recent && now > revealUntil && abs(scrollY - oldY) > 12) setShown(false)
+        }
+
+        webView.setOnTouchListener { v, e ->
+            lastTouch = SystemClock.uptimeMillis()
+            var consumed = false
+            when (e.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    onTouchDown()
+                    if (!inEdgeZone(e.x, e.y, v.width, v.height)) edgeScroller.cancel()
+                    downX = e.x
+                    downY = e.y
+                    downT = e.eventTime
+                    multi = false
+                    topDown = e.y < TOP_EDGE_DP * density
+                }
+                MotionEvent.ACTION_POINTER_DOWN -> {
+                    multi = true
+                    edgeScroller.cancel()
+                    topDown = false
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    // jari menyeret = pengguna menggulir sendiri: hentikan gulir ketuk-tepi
+                    if (abs(e.x - downX) > slop || abs(e.y - downY) > slop) edgeScroller.cancel()
+                    if (topDown && e.y - downY > PULL_DP * density) {
+                        topDown = false
+                        reveal()
+                    }
+                }
+                MotionEvent.ACTION_CANCEL -> {
+                    // Sistem mengambil alih sentuhan dari tepi atas = bar sedang ditarik
+                    if (topDown) {
+                        topDown = false
+                        reveal()
+                    }
+                }
+                MotionEvent.ACTION_UP -> {
+                    topDown = false
+                    val quick = e.eventTime - downT < 350
+                    val still = abs(e.x - downX) < slop && abs(e.y - downY) < slop
+                    if (!multi && quick && still && !isBusy()) {
+                        val w = v.width
+                        val h = v.height
+                        val inBand = e.y > h * SIDE_TOP && e.y < h * (1f - SIDE_BOTTOM)
+                        val edge = edgeOn() && SIDE_ZONE > 0f && inBand
+                        if (edge && e.x > w * (1f - SIDE_ZONE)) {
+                            scrollPage(RIGHT_DIR)
+                            consumed = true
+                        } else if (edge && e.x < w * SIDE_ZONE) {
+                            scrollPage(LEFT_DIR)
+                            consumed = true
+                        } else {
+                            setShown(!shown)
+                        }
+                        if (consumed) {
+                            // Batalkan ketukan agar link/tombol di bawah jari tidak ikut terbuka
+                            val c = MotionEvent.obtain(e)
+                            c.action = MotionEvent.ACTION_CANCEL
+                            v.onTouchEvent(c)
+                            c.recycle()
+                        }
+                    }
+                }
+            }
+            consumed
+        }
+    }
+}
+
+// Menggerakkan halaman tiap frame layar (Choreographer + WebView.scrollBy), sama seperti AutoScroller.
+// Jarak satu ketukan = fraction x tinggi layar; kecepatan = speedDpPerMs x kepadatan layar. Berhenti di ujung halaman.
+class EdgeScroller(private val webView: WebView) {
+    private val math = AutoScrollMath.Edge()
+    private var running = false
+
+    private val callback = object : Choreographer.FrameCallback {
+        override fun doFrame(frameTimeNanos: Long) {
+            if (!math.active()) { running = false; return }
+            val move = math.step(frameTimeNanos)
+            if (move != 0) {
+                if (!webView.canScrollVertically(if (move > 0) 1 else -1)) {
+                    math.cancel()
+                    running = false
+                    return
+                }
+                webView.scrollBy(0, move)
+            }
+            if (math.active()) Choreographer.getInstance().postFrameCallback(this) else running = false
+        }
+    }
+
+    fun scroll(dir: Int, fraction: Float, speedDpPerMs: Float) {
+        val dp = webView.resources.displayMetrics.density.toDouble()
+        math.begin(dir, webView.height * fraction.toDouble(), speedDpPerMs * dp)
+        if (!running) {
+            running = true
+            Choreographer.getInstance().postFrameCallback(callback)
+        }
+    }
+
+    fun cancel() {
+        math.cancel()
+        if (running) {
+            Choreographer.getInstance().removeFrameCallback(callback)
+            running = false
+        }
+    }
+}

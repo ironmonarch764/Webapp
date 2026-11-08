@@ -1,0 +1,150 @@
+# Catatan sesi perbaikan WebApp
+
+## Sesi 1 (audit dasar) - selesai
+Diubah (semua kecil dan terisolasi):
+- MainActivity.kt: DownloadListener dibungkus try/catch (cegah crash untuk blob:/data:); fallback bila restoreState gagal (cegah layar kosong); siteBase dibuat @Volatile.
+- DnsProxy.kt: socket klien ditutup di jalur return awal (cegah kebocoran socket).
+- MenuSheet.kt: dismiss() sheet lama dibungkus try/catch (cegah crash bila Activity lama sudah dihancurkan).
+
+Belum diverifikasi dengan build: lingkungan sesi tidak punya Android SDK/Gradle/kotlinc. Jalankan workflow "Build APK" untuk memastikan.
+
+## Temuan untuk sesi berikutnya (BELUM diubah)
+1. AdData/MainActivity.parseLists: kondisi `cssCount < 0` membuat aturan kosmetik (##) tidak pernah dipakai. Kemungkinan sengaja - konfirmasi dulu.
+2. [SELESAI] applyImageFx kini diterapkan ulang di onPageFinished bila slider haluskan/ketajaman tidak 0.
+3. WebView.onPause()/onResume() tidak dipanggil, jadi video/audio/timer halaman tetap jalan di latar belakang. Perlu diuji di HP karena berdekatan dengan penyimpanan posisi baca.
+4. Lanjut baca (resumeOrLoad) tidak jalan untuk situs yang redirect ke domain dasar berbeda dari alamat tersimpan.
+5. WebView sementara di onCreateWindow (mode blokir pindah domain) tidak di-destroy bila popup tidak pernah memicu shouldOverrideUrlLoading.
+6. DnsProxy.stop() di onDestroy bersifat global; Activity lama bisa mematikan proxy milik Activity baru (race langka).
+7. [SELESAI sebagian] Keystore sudah dipindah ke GitHub Secrets (KEYSTORE_BASE64, KEYSTORE_PASSWORD, KEY_ALIAS, KEY_PASSWORD) dan build.yml memulihkannya. Sisa: keystore.yml masih ada (membuat kunci BARU dengan sandi publik dan meng-commit-nya) sebaiknya dihapus; kunci lama dan sandinya masih terbaca di riwayat git.
+8. Tidak ada pengujian dan tidak ada gradle wrapper. [SELESAI] .gitignore ditambahkan (jks tidak diabaikan).
+9. Tidak terpakai: izin ACCESS_NETWORK_STATE, ic_launcher.xml, konstanta CHROME_UA.
+
+## Sesi 2 (keamanan dan stabilitas) - selesai
+Diubah:
+- MainActivity.kt: token sekali pakai untuk bridge pemilih elemen (addRule/pickerDone); file: hanya untuk halaman error aplikasi, content: diblokir; allowFileAccess/allowContentAccess dimatikan; http->https dinaikkan untuk situs tersimpan https (dengan pengaman perulangan); peringatan sekali per host untuk halaman HTTP; onReceivedSslError selalu cancel + toast; onRenderProcessGone (utama, popup, temp) agar app tidak mati saat renderer kehabisan memori; WebView sementara popup-diblokir kini benar-benar di-destroy (view.post tidak pernah jalan pada view yang tidak terpasang); guard perulangan halaman error; callback applyDns tidak jalan setelah Activity dihancurkan; unduhan hanya http/https.
+- AdData.kt: PICKER_JS memakai token. FabController.kt: release(). MenuSheet.kt: dismissMenuSheet().
+- app/build.gradle.kts: signing hanya dari environment; lokal tanpa secret memakai kunci debug; di GitHub Actions gagal dengan pesan jelas bila secret kurang.
+- build.yml: secret hanya ke langkah yang butuh, cek secret, permissions read-only, if-no-files-found: error.
+- keystore.yml dihapus (membuat kunci baru dengan sandi tertanam). .gitignore: *.jks, *.keystore dll.
+- AndroidManifest.xml + res/xml/backup_rules.xml + data_extraction_rules.xml: data WebView (cookie/sesi) tidak ikut cadangan cloud.
+Belum diverifikasi dengan build/perangkat (lihat laporan sesi).
+
+## Sisa (untuk keputusan Anda / sesi berikutnya)
+- Kunci lama masih ada di riwayat git repo publik. Mengganti kunci memutus update di atas app lama.
+- Cookie pihak ketiga tetap aktif (dibutuhkan login Google/popup).
+- usesCleartextTraffic tetap true (alamat situs bebas diisi, bisa http).
+- WebView.onPause()/onResume() belum dipanggil (butuh uji di HP).
+
+## Sesi 3 (ad blocker, parser, domain) - selesai
+Catatan: build.yml dan .gitignore hasil Sesi 2 ternyata belum terpasang di repo (file berawalan titik/alur unggah); versi Sesi 2 dipulihkan di sini dan ditambah langkah tes.
+Diubah:
+- FilterEngine.java (baru): parser daftar filter + evaluasi blokir + filter kosmetik; Java murni, diuji.
+- PublicSuffix.java (baru): domain terdaftar memakai algoritma Public Suffix List (tanpa dependensi); psl.dat diunduh berkala, ada daftar bawaan untuk offline.
+- FilterEngineSelfTest.java (baru, app/src/test): 275 pemeriksaan; dijalankan otomatis di build.yml sebelum build APK.
+- MainActivity.kt: parseLists/isAd/baseDomain memakai mesin baru; pengecualian @@; $popup hanya untuk popup/pengalihan; pihak pertama juga dikenali dari alamat tersimpan (configBase); unduhan divalidasi + rename atomik + batas 30 MB; log tanpa data sensitif; hasil parse dipakai bersama antar Activity; menu "Filter kosmetik: ON/OFF" (default OFF = perilaku sebelumnya).
+- AdData.kt: PSL_URL.
+Keterbatasan: lihat laporan sesi (tidak ada aturan bertipe/path/regex/procedural; kosmetik umum dibatasi 3000 aturan).
+
+## Perbaikan setelah Sesi 3 (laporan: kosmetik ON bikin HP panas dan aplikasi keluar sendiri)
+- Penyebab 1: aturan kosmetik UMUM (hingga 3000 selector atribut) dievaluasi ke setiap elemen halaman -> CPU/memori renderer. Kini aturan umum mati (hanya aturan khusus domain, maks 500 aturan / 60 KB per halaman).
+- Penyebab 2: pada Sesi 2 saya menutup aplikasi (finish) setelah 3 kali renderer mati beruntun. Kini membuka halaman aman (error.html) dan aplikasi tetap hidup.
+- Validasi unduhan daftar diperbaiki (looksLikeList): daftar bergaya ABPindo tidak lagi ditolak terus (yang membuatnya diunduh ulang tiap peluncuran).
+- Baru: menu "Info diagnosa" (RAM, penyebab proses berhenti menurut sistem, renderer mati terakhir, crash terakhir) + Diag.kt.
+- BELUM TERBUKTI: penyebab app masih keluar saat kosmetik OFF. Minta tangkapan layar "Info diagnosa" setelah kejadian.
+
+## Log aplikasi dan spanduk merah (permintaan pengguna)
+- Spanduk merah (ketuk = buka log) muncul bila: renderer WebView mati, aplikasi sebelumnya crash (error tercatat), atau sistem menghentikan proses saat masih di layar (memori habis/crash/ANR; API 30+). Aplikasi tidak lagi menutup diri.
+- Log (applog.txt, maks 64 KB, lokal): mulai/tutup aplikasi, RAM, halaman selesai (+RAM), onTrimMemory (10/15/>=60), renderer mati, crash (nama exception + 6 baris stack), gagal muat halaman (kode saja), TLS ditolak (kode saja), unduhan daftar (berhasil/gagal/tidak valid), filter dimuat (jumlah aturan), kosmetik ON/OFF, penyebab proses sebelumnya berhenti.
+- TIDAK dicatat: alamat situs, host, cookie, isi halaman.
+- Lihat: menu > Info diagnosa > Lihat log (Salin / Hapus), atau ketuk spanduk merah.
+
+## Perbaikan panas (kosmetik ON + muat gambar awal)
+- Preload.kt: skrip tidak lagi membaca layout dari gambar pertama tiap 150 ms (mulai dari posisi terakhir), MutationObserver hanya bereaksi bila ada <img> baru (iklan/penghitung yang terus mengubah DOM tidak memicu hitung ulang), berhenti saat halaman tersembunyi, dan gambar display:none (mis. disembunyikan filter kosmetik) dilewati.
+- FilterEngine.java: aturan kosmetik per-domain yang bagian kanannya hanya atribut/*/pseudo ([class*="ad"], :not(...)) dibuang (costlySelector) karena dicek ke setiap elemen. Uji ditambahkan (303 pemeriksaan lulus).
+- MainActivity.kt: log "kosmetik halaman: N aturan, K KB" per halaman (tanpa host) untuk menilai beban.
+- BELUM TERBUKTI di perangkat: log tidak merekam CPU renderer. Bandingkan rasa hangat setelah update; bila masih hangat, kirim log yang memuat baris "kosmetik halaman".
+
+## Sesi 4 (preload, auto-scroll, posisi membaca) - selesai
+Diubah:
+- Preload.kt: PRELOAD_JS ditulis ulang (status per gambar: sedang diunduh / gagal ke-n; maks 2 unduhan bersamaan; gagal diulang maks 2x dengan jeda; src situs yang sedang dimuat tidak ditimpa; placeholder data:/1px diganti; <picture>; AHEAD turun di 2G/3G/hemat data/RAM kecil; preconnect maks 4 origin; berhenti saat halaman tersembunyi). Baru: RESTORE_JS (pemulihan posisi terbatas waktu, berhenti saat disentuh) dan SAVE_POS_JS.
+- AutoScrollMath.java (baru, Java murni, diuji) + AutoScroll.kt: kecepatan berbasis waktu; dt maks 0.1 dtk (sebelumnya 0.05); di dasar tunggu 2 dtk, sampai 8 dtk bila gambar di ujung masih dimuat; berhenti bila WebView lepas dari layar.
+- ReadingPos.java (baru, diuji): sameDocument() dan clampY().
+- MainActivity.kt: posisi disimpan paling sering tiap 2 dtk saat scroll (bukan hanya onPause); tidak menyimpan posisi sementara (halaman belum complete / pemulihan berjalan); pemulihan hanya untuk dokumen yang sama dengan yang disimpan (bukan halaman perantara), kedaluwarsa 20 dtk; autoScroller.stop() di onDestroy dan saat menu dibuka.
+- FabController.kt: parameter opsional onScroll.
+- Tes: ReadingSelfTest.java (75 pemeriksaan, ikut build.yml), app/src/test/js/reading-flow.test.js (36 pemeriksaan di Chromium, dijalankan manual dengan node + playwright).
+Belum diverifikasi: build Kotlin (tidak ada Android SDK di sesi ini) dan perilaku di perangkat nyata.
+
+## Sesi 5 (DNS-over-HTTPS, proxy DNS, jaringan WebView) - selesai
+Masalah terkonfirmasi (dari kode) dan perbaikan:
+- NXDOMAIN / "tanpa alamat" / alamat 0.0.0.0 dari DoH dianggap gagal lalu DIAM-DIAM beralih ke DNS sistem (filter DNS kustom bisa ditembus, kueri bocor). Kini jawaban sah dari server pilihan dihormati; cadangan sistem HANYA untuk kegagalan transport (jaringan/TLS/timeout/HTTP bukan 200/isi bukan JSON DNS) dan diberitahukan (toast + log, tanpa nama host; label menu DNS ikut berubah).
+- Data jawaban DoH diteruskan ke InetAddress.getByName tanpa validasi: data non-IP memicu pencarian DNS sistem (kebocoran/menggantung). Kini literal IPv4/IPv6 diurai ketat tanpa menyentuh DNS.
+- Tanpa status DNS, tanpa batas ukuran respons, JSON longgar (org.json) -> kini JSON ketat, wajib field Status, maks 64 KB, batas total waktu baca, redirect tidak diikuti.
+- Cache: TTL tetap 5 menit mengabaikan TTL jawaban; hasil lama dari konfigurasi sebelumnya bisa masuk cache setelah ganti DNS (race); tak terbatas. Kini TTL jawaban (min semua rekaman termasuk CNAME) dibatasi 10 dtk..5 menit, cache negatif 30 dtk, kegagalan 5 dtk, cadangan sistem 30 dtk, LRU 512 entri, satu resolver per konfigurasi (ganti DNS = cache baru + permintaan lama dibatalkan).
+- IPv4 diutamakan (dipertahankan), tapi IPv6 tidak pernah dicoba bila A ada namun semua sambungan gagal. Kini AAAA dicari hanya bila A kosong / semua sambungan IPv4 gagal (tanpa tambahan kueri di jalur normal).
+- DNS sistem sebagai cadangan tanpa batas waktu; sambungan maks 4 alamat x 10 dtk. Kini cadangan dibatasi 8 dtk, total sambungan 20 dtk, pemutus sirkuit (3 gagal beruntun -> DoH dilewati 30 dtk), kueri sama bersamaan digabung (singleflight).
+- DnsProxy.stop() global (temuan #6): Activity lama bisa mematikan proxy Activity baru. Kini stop(owner) hanya oleh pemilik; stopAll() saat memilih DNS sistem. Semua soket aktif dilacak dan ditutup saat proxy berhenti. Port gagal dibuka kini diberitahukan dan override lama dilepas (sebelumnya diam).
+- HTTP biasa yang gagal tidak dijawab sama sekali; kini 502/400 seperti CONNECT.
+- Alamat DoH kustom hanya dicek awalan https://. Kini divalidasi (URI, host sah, tanpa userinfo/#, port). Alamat tersimpan yang tidak valid diberitahukan (dulu diam-diam DNS sistem tapi label "Kustom"). Label menu menampilkan keadaan nyata (WebView tidak mendukung, gagal dimulai, cadangan aktif). Uji server DoH otomatis setelah memilih DNS.
+- Halaman error: "Coba lagi"/"Muat ulang" kini memuat ulang halaman yang gagal (dulu selalu halaman awal); menampilkan penyebab (kode) dan tombol "Pakai DNS sistem" bila DNS kustom aktif.
+- normalize(): skema huruf besar dan karakter kontrol ditangani.
+File: DohResolver.java (baru, diuji), DohResolverSelfTest.java (209 pemeriksaan, ikut build.yml), DnsProxy.kt, MainActivity.kt, Diag.kt (baris DNS di Info diagnosa), error.html, build.yml.
+Belum diverifikasi: build Kotlin dan perilaku di perangkat (tidak ada Kotlin/Android SDK di sesi ini).
+Keterbatasan: lihat laporan sesi (addDirect, DoH hanya JSON, nama LAN hanya lewat DNS sistem, trafik non-WebView memakai DNS sistem).
+
+## Sesi 6 (integrasi, pengujian, build final) - selesai sejauh lingkungan memungkinkan
+Lingkungan sesi: JRE 21 (tanpa javac; kompiler Java dipakai lewat javax.tools/jdk.compiler), Node + Playwright/Chromium. TIDAK ada Kotlin compiler, Gradle, Android SDK, dan jaringan keluar dimatikan -> build Kotlin/APK TIDAK bisa dijalankan.
+Dijalankan dan hasil aktual:
+- FilterEngineSelfTest 303 lulus/0 gagal; ReadingSelfTest 75/0; DohResolverSelfTest 209/0 (uji IPv4->IPv6 dilewati: loopback IPv6 tidak ada); UrlRulesSelfTest 35/0.
+- reading-flow.test.js (Chromium): 36 lulus/0 gagal setelah perbaikan tes di bawah.
+- Pemeriksaan kode statis (bukan kompilasi): kurung/kurawal seimbang di semua .kt; tanda tangan Java yang dipanggil dari Kotlin cocok (DohResolver, FilterEngine, PublicSuffix, UrlRules, ReadingPos); metode Bridge cocok dengan skrip JS (AdData, error.html); referensi R.* cocok dengan resource; aturan ProGuard mempertahankan @JavascriptInterface; onDestroy membersihkan autoScroller/saveHandler/popup/sheet/WebView/DnsProxy(owner).
+Perubahan di sesi ini (hanya tes, kode aplikasi tidak diubah):
+- reading-flow.test.js: (1) skrip PRELOAD_JS kini memakai placeholder __AHEAD__/__MAXI__ (sejak Sesi 5); tes sebelumnya menyuntikkan skrip mentah sehingga langsung error "__AHEAD__ is not defined". Tes kini mengganti placeholder seperti MainActivity.injectPreload (AHEAD=4, MAXI=2). (2) Asersi C2 "halaman tidak ditarik lagi" memakai scrollY, yang bergeser sendiri oleh scroll anchoring Chromium saat gambar lazy di atas membesar (terbukti: panggilan scrollTo tetap 3 setelah sentuhan; dengan overflow-anchor:none scrollY stabil). Kini asersi menghitung panggilan scrollTo. Perilaku RESTORE_JS tidak berubah.
+Belum diuji / sisa: lihat laporan akhir sesi (build Kotlin/APK, perangkat nyata, lint, WebView.onPause/onResume #3, resumeOrLoad redirect #4, kunci lama di riwayat git).
+
+## Sesi 6 - lanjutan (setelah log diagnosa 04-11)
+- MainActivity.kt: onPause() kini memanggil webView.onPause() (bila WebView belum mati) dan ditambah onResume() -> webView.onResume(). Menutup temuan #3. BELUM diuji (tidak ada kompiler/perangkat); uji di HP: video/suara berhenti saat app di latar, lanjut normal saat kembali.
+- AdData.kt: LISTS[0] diganti ke https://adguardteam.github.io/AdGuardSDNSFilter/Filters/filter.txt (tautan langsung resmi). URL raw.githubusercontent.com/.../master/Filters/filter.txt memberi "unduh gagal: HTTP 404" di setiap peluncuran pada log perangkat. URL baru BELUM diuji dari sini (jaringan mati); lihat log "diperbarui: list0.txt" setelah build baru.
+- Log diagnosa: SocketException di Socket.getInputStream (pool-4, terakhir 29-10) cocok dengan jalur lama DnsProxy; kode saat ini sudah mengambil getInputStream di dalam try (DnsProxy.handle) dan membungkus pool.execute. Belum terbukti hilang di perangkat: butuh build baru.
+
+## Sesi 6 - permintaan fitur (menu kanan + simpan situs) - BELUM dikompilasi/diuji
+- MenuSheet.kt: showMenuSheet kini deretan vertikal di pinggir kanan (bukan kisi 4 kolom di tengah); ketuk di luar = tutup; teks status (mis. "133 diblokir") hanya muncul bila ada.
+- MainActivity.showMenu(): urutan atas ke bawah = Perlindungan, Segarkan, Beranda, Situs, Pengaturan, lalu Gulir dan Penyesuaian warna (dua terakhir dipertahankan agar tetap bisa dibuka; tidak ada pintu lain ke keduanya).
+- Kartu Perlindungan: baris "Pengaturan lainnya" dihapus (Pengaturan kini di menu kanan). Baris GPC tetap membuka Pengaturan.
+- Sites.kt + MainActivity: dua tombol baru di sheet Situs: "Simpan halaman ini" (alamat halaman yang sedang dibuka, nama = judul halaman/host, tanpa duplikat) dan "Tulis alamat" (nama opsional + alamat, divalidasi dengan normalize(), hanya disimpan, tidak langsung dibuka). Menyentuh situs tersimpan = openSite() seperti sebelumnya (Beranda ikut menjadi alamat itu).
+- Pemeriksaan: kurung seimbang; tanda tangan showSitesSheet cocok dengan pemanggil. Tes Java tidak terkait.
+
+## Sesi 6 - pegangan setengah lonjong + 3 tombol bulat - BELUM dikompilasi/diuji
+- activity_main.xml: tombol menu bulat di kanan atas diganti pegangan setengah lonjong (52x76dp, menempel di tepi kanan, margin atas 100dp). Drawable baru: bg_fab_handle.xml, ic_chevron_left.xml.
+- QuickTools.kt (baru): diketuk -> 3 bulatan terpisah (Menu, Penyesuaian warna, Gulir) muncul di kiri pegangan; ketuk lagi / ketuk atau geser halaman = tertutup (ketukan halaman yang hanya menutup tidak ikut menyembunyikan pegangan).
+- FabController.kt: pegangan menyelinap ke kanan (bukan naik ke atas) saat disembunyikan; parameter baru onHide menutup 3 tombol.
+- MainActivity.kt: showMenu() kini 5 tombol (Perlindungan, Segarkan, Beranda, Situs, Pengaturan); Gulir dan Penyesuaian warna pindah ke 3 tombol bulat.
+- Pemeriksaan: XML valid, kurung seimbang. Belum ada render/uji layar. Ukuran/posisi (52x76dp, 100dp dari atas, bulatan 56dp) mudah diubah di activity_main.xml dan QuickTools.kt.
+
+## Fitur Page (tab) + Situs list/kotak - BELUM dikompilasi/diuji di perangkat
+- Pages.kt (baru): Page, PageStore (daftar page di prefs "pages_json"), PageLimits, sheet daftar Page. PagePolicy.java (baru, diuji 443 pemeriksaan): batas aman menurut RAM, waktu hibernasi/tutup, pemilihan page.
+- MainActivity: WebView kini dibuat per page (createWebView/setupWebView); `webView` = page aktif; keadaan per page (siteBase, firstLoad, restore*, failedUrl) pindah ke Page. activatePage/hibernatePage/closePage/openInNewPage/enforceLimit/idleCheck. Setelah crash/renderer mati/aplikasi dimulai ulang: semua page hibernasi kecuali yang terakhir dibuka.
+- Pilihan "Page sekarang / Page baru" muncul saat membuka situs tersimpan dan "Buka alamat baru" (bila Page ON). Page ON = default.
+- Pengaturan > Page: saklar Page, Batas page aktif (0 = otomatis; di atas saran HP ada peringatan), Hibernasi setelah, Tutup otomatis + lamanya (default 24 jam).
+- QuickTools: tombol ke-4 "Page" di bawah Gulir (hanya bila Page ON) + lencana jumlah page. activity_main.xml: WebView diganti FrameLayout pageHost.
+- Sites.kt: tampilan daftar/kotak, tombol Edit (sematkan, urutkan, ubah, hapus). Data situs kini punya flag "p" (pin), kompatibel dengan data lama.
+- Ikon baru: ik_edit, ik_page, ik_batas_page, ik_view_grid, ik_view_list (dipotong dari foto).
+
+## Perbaikan tampilan Page + logo situs - BELUM dikompilasi/diuji
+- Dialog "buka di mana" diganti sheet gelap modern (showPageTargetSheet). Logo situs (Favicons.kt) di daftar Situs dan Page; sumber: onReceivedIcon + /favicon.ico situs itu sendiri (tanpa layanan pihak ketiga).
+- Ikon baru dipakai: sematkan, hibernasi, tutup otomatis, tambah page, urut/hapus. README.md ditambahkan.
+- Semua AlertDialog bergaya gelap lewat tema AppDialog (themes.xml, alertDialogTheme) + drawable bg_dialog.xml.
+- Sheet Page: tombol tampilan daftar/kotak (pref pages_view).
+
+## Menu Situs, Penyesuaian warna, dan Page jadi panel melayang - BELUM dikompilasi/diuji
+- FloatingPanel.kt (baru): kartu melayang seperti panel Gulir otomatis (bukan Dialog, tanpa redup, halaman di belakang tetap terlihat dan bisa digulir/disentuh). Satu panel pada satu waktu; ditutup lewat tombol ✕, tombol Kembali (MainActivity.handleOnBackPressed), atau setelah memilih. Bisa digeser dengan menyeret garis pegangan di atas kartu (dijaga tetap di dalam layar). MaxHeightScrollView membatasi tinggi daftar.
+- Sites.kt, Pages.kt: Dialog diganti FloatingPanel (isi dan perilaku daftar/kotak, Edit, sematkan, urut, hapus tidak berubah). Jumlah kolom kotak mengikuti lebar panel.
+- ColorFilterSheet.kt: showColorFilterSheet kini menerima fungsi `() -> WebView` (selalu WebView page aktif). Tata letak diringkas: slider satu baris (nama | slider | nilai), Reset pindah ke baris judul, bagian "Khusus gambar" dilipat (terbuka sendiri bila sudah ada nilainya). Ketuk tombol warna lagi = tutup.
+- MainActivity.kt: pemanggil disesuaikan; Kembali menutup panel dulu; onDestroy menutup panel; menyalakan Gulir otomatis menutup panel (tempatnya sama di bawah layar).
+- Lanjutan: dialog "Buka di mana?" (showPageTargetSheet) dan empat kotak isian alamat (Alamat web, Page baru, Ubah situs, Simpan alamat) juga jadi panel melayang. FloatingForm.kt (baru): showFormPanel (kolom isian gelap, galat di dalam panel, keyboard muncul otomatis, tombol Selesai di keyboard = OK). FloatingPanel.cancelable=false untuk alamat awal yang wajib diisi (Kembali ditelan, tidak digantikan panel lain). Ubah situs: daftar Situs dibuka lagi setelah Simpan/Batal (hanya satu panel melayang sekaligus). Tersisa AlertDialog biasa: konfirmasi dan pilihan di Pengaturan/Perlindungan.
+- Belum diuji: build Kotlin dan tampilan di perangkat (tidak ada Kotlin/Android SDK di sesi ini). Ukuran/posisi mudah diubah di FloatingPanel.kt (lebar maks 440dp, jarak bawah 28dp, sudut 24dp, warna #F01F2024).
+
+## Cek log diagnosa 11-08 (Xiaomi 2407FPN8EG, Android 16)
+- Tidak ada renderer mati, tidak ada crash baru, tidak ada henti saat di layar. Crash SocketException terakhir berumur ~10 hari (jalur DnsProxy lama) dan tidak muncul lagi.
+- "kode 13" = REASON_OTHER, "kode 16" = aplikasi diperbarui: bukan crash. Diag.kt kini memberi nama kode 12-16.
+- list0.txt (AdGuard) berhasil diunduh 4546 KB pada 11-08 00:09 (URL baru berfungsi). Puncak heap saat itu 152 MB dari batas 256 MB.
+- "profil Google: HTTP 400" di setiap percobaan sejak awal log: titik akhir tidak resmi ListAccounts menolak; tampilan akun kembali ke "sesi aktif". Penyebab belum diketahui.
