@@ -169,3 +169,10 @@ Belum diuji / sisa: lihat laporan akhir sesi (build Kotlin/APK, perangkat nyata,
 - build.gradle.kts: dependensi okhttp; proguard-rules.pro: -dontwarn okhttp3.internal.platform / conscrypt / bouncycastle / openjsse.
 - DohResolverSelfTest tetap 260 lulus / 0 gagal. OkDohTransport.kt BELUM dikompilasi (Kotlin) dan belum diuji ke server sungguhan.
 - Cara memastikan di HP: pilih Quad9, buka Info diagnosa, baris DNS harus menampilkan format=standar dan http=h2 tanpa "cadangan sistem" yang naik.
+
+## Urut tekan-tahan-geser + panel tertutup oleh geseran di luar
+- DragReorder.kt (baru): tekan tahan (waktu long-press sistem, jari diam) pada item di daftar Situs / daftar Page -> item terangkat (getar, membesar sedikit) dan mengikuti jari; item di bawah jari meredup = tujuan; lepas = pindah ke posisi tujuan lewat onDrop(dari, ke) (ditunda satu putaran lewat handler.post supaya render ulang tidak terjadi di tengah penanganan sentuhan). Lepas di luar item/daftar = batal. Dekat tepi atas/bawah daftar, daftar menggulir otomatis. Bekerja untuk tampilan daftar maupun kotak. Item hanya bisa pindah dalam kelompoknya (Situs: sematan vs bukan). Ketuk biasa dan menggulir daftar tetap jalan; render ulang otomatis (logo situs yang selesai diunduh) ditunda saat menyeret.
+- Tombol manual ▲▼◀▶ dihapus dari Situs (mode edit) dan Page. Sisa kontrol: Situs = sematkan, ubah, hapus; Page = hibernasi, ✕. Petunjuk teks ditambahkan (Situs: selalu tampil; Page: di baris info).
+- PagePolicy.moveToIndex(list, from, to) (Java murni, dites di PagePolicySelfTest: 454 lulus / 0 gagal). Kotlin: reorderSite (Sites.kt, hanya satu kelompok), MainActivity.reorderPage. PagesUi.onMove diganti onReorder(dari, ke). moveSite/PagePolicy.moveTarget lama tidak dipakai lagi (dibiarkan).
+- FloatingPanel.onTouch: selain ketukan, geseran di luar kartu (melewati touch slop) atau sentuhan kedua langsung menutup panel; gerakannya tetap diteruskan ke halaman sehingga halaman ikut tergulir. Tahan lama di luar kartu tidak menutup.
+- Belum dikompilasi/diuji di perangkat (Kotlin).

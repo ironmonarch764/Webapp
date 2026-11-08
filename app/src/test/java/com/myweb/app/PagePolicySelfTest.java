@@ -97,6 +97,20 @@ public class PagePolicySelfTest {
         eq("sematan A turun -> C", PagePolicy.siteSwapTarget(pin, 0, 1), 2);
         eq("sematan C naik -> A", PagePolicy.siteSwapTarget(pin, 2, -1), 0);
         eq("sematan C turun: ujung kelompok", PagePolicy.siteSwapTarget(pin, 2, 1), -1);
+
+        // urut tekan-tahan-geser: pindah ke indeks tertentu
+        java.util.List<String> mv = new java.util.ArrayList<>(java.util.Arrays.asList("A", "B", "C", "D"));
+        check("moveToIndex 0->2 berhasil", PagePolicy.moveToIndex(mv, 0, 2));
+        eq("moveToIndex 0->2 hasil", mv.toString(), "[B, C, A, D]");
+        check("moveToIndex 3->1 berhasil", PagePolicy.moveToIndex(mv, 3, 1));
+        eq("moveToIndex 3->1 hasil", mv.toString(), "[B, D, C, A]");
+        check("moveToIndex ke ujung depan", PagePolicy.moveToIndex(mv, 2, 0));
+        eq("moveToIndex ke ujung depan hasil", mv.toString(), "[C, B, D, A]");
+        check("moveToIndex ke ujung belakang", PagePolicy.moveToIndex(mv, 0, 3));
+        eq("moveToIndex ke ujung belakang hasil", mv.toString(), "[B, D, A, C]");
+        check("moveToIndex indeks sama = tidak berubah", !PagePolicy.moveToIndex(mv, 1, 1));
+        check("moveToIndex indeks di luar rentang ditolak", !PagePolicy.moveToIndex(mv, -1, 2) && !PagePolicy.moveToIndex(mv, 0, 4) && !PagePolicy.moveToIndex(mv, 4, 0));
+        eq("moveToIndex penolakan tidak mengubah daftar", mv.toString(), "[B, D, A, C]");
         eq("B turun -> D", PagePolicy.siteSwapTarget(pin, 1, 1), 3);
         eq("B naik: ujung kelompok", PagePolicy.siteSwapTarget(pin, 1, -1), -1);
         eq("E naik -> D", PagePolicy.siteSwapTarget(pin, 4, -1), 3);

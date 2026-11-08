@@ -43,6 +43,15 @@ fun moveSite(list: MutableList<Site>, url: String, dir: Int): Boolean {
     return true
 }
 
+// Pindahkan situs fromUrl ke posisi situs toUrl (urut tekan-tahan-geser). Hanya di dalam kelompoknya
+// (sematan / bukan sematan). true bila urutan berubah.
+fun reorderSite(list: MutableList<Site>, fromUrl: String, toUrl: String): Boolean {
+    val i = list.indexOfFirst { it.url == fromUrl }
+    val j = list.indexOfFirst { it.url == toUrl }
+    if (i < 0 || j < 0 || i == j || list[i].pinned != list[j].pinned) return false
+    return PagePolicy.moveToIndex(list, i, j)
+}
+
 private var sitesDialog: FloatingPanel? = null
 
 fun dismissSitesSheet() {
@@ -117,22 +126,33 @@ fun showSitesSheet(a: Activity, ui: SitesUi) {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
         setPadding(px(4), px(8), px(4), 0)
-        visibility = View.GONE
     }
     hint.addView(Icons.make(a, "@urut_hapus", 14f), LinearLayout.LayoutParams(px(22), px(22)).apply { rightMargin = px(8) })
-    hint.addView(TextView(a).apply {
-        text = "Mode edit: ketuk situs untuk mengubah · sematkan · urutkan · hapus ✕"
+    val hintTv = TextView(a).apply {
         textSize = 11.5f
         setTextColor(Color.parseColor("#7F93C9"))
-    })
+    }
+    hint.addView(hintTv)
     root.addView(hint, LinearLayout.LayoutParams(match, wrap))
 
     val box = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL }
     // Daftar menggulir di dalam panel; tinggi dibatasi supaya halaman di belakang tetap terlihat
     val maxList = (a.resources.displayMetrics.heightPixels * 0.62f - px(210)).toInt().coerceAtLeast(px(120))
-    root.addView(MaxHeightScrollView(a, maxList).apply { addView(box) }, LinearLayout.LayoutParams(match, wrap))
+    val sv = MaxHeightScrollView(a, maxList).apply { addView(box) }
+    root.addView(sv, LinearLayout.LayoutParams(match, wrap))
 
     lateinit var render: () -> Unit
+
+    // Urut dengan tekan-tahan lalu geser. Indeks = urutan tampil (sematan dulu, lalu yang lain).
+    val drag = DragReorder(a, sv, box) { from, to ->
+        val all = ui.load()
+        val ordered = all.filter { it.pinned } + all.filter { !it.pinned }
+        if (from in ordered.indices && to in ordered.indices) {
+            val l = all.toMutableList()
+            if (reorderSite(l, ordered[from].url, ordered[to].url)) ui.save(l)
+        }
+        render()
+    }
 
     fun iconBox(key: String, active: Boolean, desc: String, click: () -> Unit): View = FrameLayout(a).apply {
         contentDescription = desc
@@ -193,11 +213,6 @@ fun showSitesSheet(a: Activity, ui: SitesUi) {
         if (i >= 0) { l[i] = Site(l[i].name, l[i].url, !l[i].pinned); ui.save(l) }
         render()
     }
-    fun move(s: Site, dir: Int) {
-        val l = ui.load().toMutableList()
-        if (moveSite(l, s.url, dir)) ui.save(l)
-        render()
-    }
     fun remove(s: Site) {
         ui.save(ui.load().filter { it.url != s.url })
         render()
@@ -212,16 +227,14 @@ fun showSitesSheet(a: Activity, ui: SitesUi) {
         return FrameLayout(a).apply { addView(v, FrameLayout.LayoutParams(px(sizeDp), px(sizeDp))) }
     }
 
-    // Kontrol edit satu situs. horizontal = nama arah geser (◀▶ untuk kotak, ▲▼ untuk daftar)
-    fun editControls(s: Site, canBack: Boolean, canFwd: Boolean, horizontal: Boolean, size: Float): List<View> = listOf(
+    // Kontrol edit satu situs: sematkan, ubah, hapus. (Urutan diubah dengan tekan-tahan lalu geser.)
+    fun editControls(s: Site, size: Float): List<View> = listOf(
         iconCtl("@sematkan", if (s.pinned) 1f else 0.4f, if (size > 16f) 40 else 36) { togglePin(s) },
-        ctl(if (horizontal) "◀" else "▲", canBack, size) { move(s, -1) },
-        ctl(if (horizontal) "▶" else "▼", canFwd, size) { move(s, 1) },
         ctl("✎", true, size) { ui.onEdit(s) { render() } },
         ctl("✕", true, size) { remove(s) }
     )
 
-    fun listRow(s: Site, canBack: Boolean, canFwd: Boolean): View {
+    fun listRow(s: Site): View {
         val row = LinearLayout(a).apply {
             orientation = LinearLayout.VERTICAL
             background = bg(Color.parseColor("#2A2C33"), px(16).toFloat(), false)
@@ -260,13 +273,14 @@ fun showSitesSheet(a: Activity, ui: SitesUi) {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.END
             }
-            editControls(s, canBack, canFwd, false, 17f).forEach { bar.addView(it) }
+            editControls(s, 17f).forEach { bar.addView(it) }
             row.addView(bar, LinearLayout.LayoutParams(match, wrap))
         }
+        drag.add(row, if (s.pinned) 1 else 0, top, row)
         return row
     }
 
-    fun tile(s: Site, canBack: Boolean, canFwd: Boolean): View {
+    fun tile(s: Site): View {
         val tileBox = LinearLayout(a).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
@@ -293,22 +307,21 @@ fun showSitesSheet(a: Activity, ui: SitesUi) {
         }, LinearLayout.LayoutParams(match, wrap))
         tileBox.addView(main, LinearLayout.LayoutParams(match, wrap))
         if (editMode) {
-            val c = editControls(s, canBack, canFwd, true, 15f)
-            val r1 = LinearLayout(a).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
-            val r2 = LinearLayout(a).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
-            // baris 1: ◀ ✎ ▶   baris 2: sematkan ✕
-            listOf(c[1], c[3], c[2]).forEach { r1.addView(it) }
-            listOf(c[0], c[4]).forEach { r2.addView(it) }
-            tileBox.addView(r1, LinearLayout.LayoutParams(match, wrap).apply { topMargin = px(4) })
-            tileBox.addView(r2, LinearLayout.LayoutParams(match, wrap))
+            // satu baris: sematkan, ubah, hapus
+            val bar = LinearLayout(a).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
+            editControls(s, 15f).forEach { bar.addView(it) }
+            tileBox.addView(bar, LinearLayout.LayoutParams(match, wrap).apply { topMargin = px(4) })
         }
+        drag.add(tileBox, if (s.pinned) 1 else 0, main, tileBox)
         return tileBox
     }
 
     render = {
         buildHeader()
-        hint.visibility = if (editMode) View.VISIBLE else View.GONE
+        hintTv.text = if (editMode) "Mode edit: ketuk situs untuk mengubah · sematkan · hapus ✕ · tekan tahan lalu geser untuk urutan"
+            else "Tekan tahan sebuah situs lalu geser untuk mengubah urutan"
         box.removeAllViews()
+        drag.clear()
         val all = ui.load()
         val pinnedList = all.filter { it.pinned }
         val otherList = all.filter { !it.pinned }
@@ -323,9 +336,7 @@ fun showSitesSheet(a: Activity, ui: SitesUi) {
             }, LinearLayout.LayoutParams(match, wrap))
         } else if (!gridMode) {
             ordered.forEach { s ->
-                val grp = if (s.pinned) pinnedList else otherList
-                val gi = grp.indexOfFirst { it.url == s.url }
-                box.addView(listRow(s, gi > 0, gi < grp.size - 1), LinearLayout.LayoutParams(match, wrap).apply { topMargin = px(8) })
+                box.addView(listRow(s), LinearLayout.LayoutParams(match, wrap).apply { topMargin = px(8) })
             }
         } else {
             val widthDp = d.widthPx / dp
@@ -337,9 +348,7 @@ fun showSitesSheet(a: Activity, ui: SitesUi) {
                     box.addView(rl, LinearLayout.LayoutParams(match, wrap).apply { topMargin = px(8) })
                     rowLayout = rl
                 }
-                val grp = if (s.pinned) pinnedList else otherList
-                val gi = grp.indexOfFirst { it.url == s.url }
-                rowLayout?.addView(tile(s, gi > 0, gi < grp.size - 1),
+                rowLayout?.addView(tile(s),
                     LinearLayout.LayoutParams(0, wrap, 1f).apply { if (i % cols != 0) leftMargin = px(8) })
             }
             // isi sisa kolom di baris terakhir supaya lebar kotak sama
@@ -354,7 +363,7 @@ fun showSitesSheet(a: Activity, ui: SitesUi) {
     render()
     // logo situs yang belum ada diunduh di latar belakang, lalu daftar digambar ulang
     Favicons.fetchMissing(a, ui.load().map { Favicons.hostOf(it.url) }) {
-        a.runOnUiThread { if (sitesDialog === d && d.isShowing) render() }
+        a.runOnUiThread { if (sitesDialog === d && d.isShowing && !drag.isDragging) render() }
     }
 
     d.show(root)

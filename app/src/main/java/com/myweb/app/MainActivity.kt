@@ -1077,12 +1077,9 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
         refreshPagesSheet()
     }
 
-    private fun movePage(p: Page, dir: Int) {
-        val i = pages.indexOf(p)
-        val j = PagePolicy.moveTarget(i, dir, pages.size)
-        if (j < 0) return
-        java.util.Collections.swap(pages, i, j)
-        persistPages()
+    // Urut ulang page (tekan-tahan lalu geser di daftar Page): pindahkan dari indeks from ke to.
+    private fun reorderPage(from: Int, to: Int) {
+        if (PagePolicy.moveToIndex(pages, from, to)) persistPages()
     }
 
     private fun openInNewPage(url: String) {
@@ -1117,7 +1114,7 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
                 recommended = PageLimits.recommended(this),
                 onSwitch = { p -> activatePage(p) },
                 onClose = { p -> closePage(p) },
-                onMove = { p, dir -> movePage(p, dir) },
+                onReorder = { from, to -> reorderPage(from, to) },
                 onHibernate = { p -> hibernatePage(p, "manual") },
                 onNewPage = { askNewPage() },
                 onFromSites = { showSites() },
@@ -2138,8 +2135,8 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
         }
     }
 
-    // Ketukan singkat di luar panel melayang menutupnya. UP diganti CANCEL supaya halaman/tombol di bawahnya tidak ikut
-    // terketuk; menggulir halaman dan sentuhan di dalam panel tidak terpengaruh.
+    // Ketukan singkat di luar panel melayang menutupnya (UP diganti CANCEL supaya halaman/tombol di bawahnya tidak ikut
+    // terketuk). Menggeser layar di luar panel juga menutupnya dan gerakannya tetap sampai ke halaman.
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
         if (FloatingPanel.onTouch(ev)) {
             val cancel = MotionEvent.obtain(ev)

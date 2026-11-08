@@ -130,6 +130,17 @@ public final class PagePolicy {
      * Urutan situs: yang disematkan tampil dulu. Geser hanya di dalam kelompoknya (sematan / bukan). pinned[] = urutan
      * daftar penuh. Hasil = indeks daftar penuh yang ditukar dengan index, atau -1 bila sudah di ujung kelompok.
      */
+    /**
+     * Pindahkan elemen dari indeks from ke indeks to (hasil akhirnya berada di to, elemen lain bergeser).
+     * Dipakai urut tekan-tahan-geser. false bila indeks salah atau tidak ada perubahan.
+     */
+    public static <T> boolean moveToIndex(java.util.List<T> list, int from, int to) {
+        if (from < 0 || to < 0 || from >= list.size() || to >= list.size() || from == to) return false;
+        T t = list.remove(from);
+        list.add(to, t);
+        return true;
+    }
+
     public static int siteSwapTarget(boolean[] pinned, int index, int dir) {
         if (index < 0 || index >= pinned.length) return -1;
         int step = dir < 0 ? -1 : 1;

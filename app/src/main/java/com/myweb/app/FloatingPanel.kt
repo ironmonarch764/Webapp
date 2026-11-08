@@ -59,9 +59,11 @@ class FloatingPanel(
 
         /**
          * Dipanggil dari Activity.dispatchTouchEvent untuk SETIAP sentuhan, sebelum diteruskan.
-         * Mengembalikan true bila sentuhan ini adalah ujung (ACTION_UP) dari ketukan singkat di luar kartu: panel
-         * sudah ditutup, dan Activity harus mengganti UP itu dengan ACTION_CANCEL supaya halaman/tombol di bawahnya
-         * tidak ikut terketuk. Geseran (menggulir halaman), tahan lama, dan sentuhan di dalam kartu tidak menutup panel.
+         *  - Ketukan singkat di luar kartu: panel ditutup pada ACTION_UP dan fungsi ini mengembalikan true; Activity harus
+         *    mengganti UP itu dengan ACTION_CANCEL supaya halaman/tombol di bawahnya tidak ikut terketuk.
+         *  - Geseran di luar kartu (menggulir/menyeret halaman) atau sentuhan kedua: panel ditutup begitu jari bergeser
+         *    melewati batas touch slop, dan gerakan itu diteruskan apa adanya ke halaman (halaman ikut tergulir).
+         *  - Sentuhan di dalam kartu dan tahan lama di luar kartu tidak menutup panel.
          */
         fun onTouch(ev: MotionEvent): Boolean {
             val c = current
@@ -76,12 +78,23 @@ class FloatingPanel(
                         moved = false
                     }
                 }
-                MotionEvent.ACTION_POINTER_DOWN -> moved = true
+                MotionEvent.ACTION_POINTER_DOWN -> {
+                    if (gestureOutside && c != null) {
+                        moved = true
+                        gestureOutside = false
+                        c.dismiss()
+                    }
+                }
                 MotionEvent.ACTION_MOVE -> {
                     if (gestureOutside && !moved && c != null) {
                         val dx = ev.rawX - downX
                         val dy = ev.rawY - downY
-                        if (dx * dx + dy * dy > c.slop * c.slop) moved = true
+                        if (dx * dx + dy * dy > c.slop * c.slop) {
+                            // digeser: tutup panel, gerakan tetap diteruskan ke halaman
+                            moved = true
+                            gestureOutside = false
+                            c.dismiss()
+                        }
                     }
                 }
                 MotionEvent.ACTION_CANCEL -> gestureOutside = false

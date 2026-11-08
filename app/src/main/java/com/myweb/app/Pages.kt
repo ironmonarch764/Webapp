@@ -157,7 +157,7 @@ class PagesUi(
     val recommended: Int,
     val onSwitch: (Page) -> Unit,
     val onClose: (Page) -> Unit,
-    val onMove: (Page, Int) -> Unit,
+    val onReorder: (Int, Int) -> Unit,
     val onHibernate: (Page) -> Unit,
     val onNewPage: () -> Unit,
     val onFromSites: () -> Unit,
@@ -267,7 +267,15 @@ fun showPagesSheet(a: Activity, ui: PagesUi) {
     val box = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL }
     // Daftar menggulir di dalam panel; tinggi dibatasi supaya halaman di belakang tetap terlihat
     val maxList = (a.resources.displayMetrics.heightPixels * 0.62f - px(230)).toInt().coerceAtLeast(px(120))
-    root.addView(MaxHeightScrollView(a, maxList).apply { addView(box) }, LinearLayout.LayoutParams(match, wrap))
+    val sv = MaxHeightScrollView(a, maxList).apply { addView(box) }
+    root.addView(sv, LinearLayout.LayoutParams(match, wrap))
+
+    // Urut dengan tekan-tahan lalu geser (indeks = urutan daftar page)
+    lateinit var renderAgain: () -> Unit
+    val drag = DragReorder(a, sv, box) { from, to ->
+        ui.onReorder(from, to)
+        renderAgain()
+    }
 
     fun ctl(label: String, enabled: Boolean, action: () -> Unit) = TextView(a).apply {
         text = label
@@ -307,7 +315,7 @@ fun showPagesSheet(a: Activity, ui: PagesUi) {
         }, LinearLayout.LayoutParams(px(40), px(40)).apply { leftMargin = px(4) })
         val list = ui.pages()
         val cur = ui.currentId()
-        infoTv.text = list.size.toString() + " page  ·  " + ui.liveCount() + " aktif (batas " + ui.limit() + ")"
+        infoTv.text = list.size.toString() + " page  ·  " + ui.liveCount() + " aktif (batas " + ui.limit() + ")  ·  tekan tahan lalu geser untuk urutan"
         if (ui.limit() > ui.recommended) {
             warnTv.visibility = View.VISIBLE
             warnTv.text = "⚠ Batas melebihi saran untuk HP ini (" + ui.recommended + "). HP bisa panas, aplikasi berat, bahkan crash."
@@ -315,6 +323,7 @@ fun showPagesSheet(a: Activity, ui: PagesUi) {
             warnTv.visibility = View.GONE
         }
         box.removeAllViews()
+        drag.clear()
 
         // Tampilan kotak: logo, judul, status, dan kontrol kecil di tiap kotak
         fun gridTiles() {
@@ -365,10 +374,9 @@ fun showPagesSheet(a: Activity, ui: PagesUi) {
                 tile.addView(main, LinearLayout.LayoutParams(match, wrap))
                 val bar = LinearLayout(a).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
                 if (p.isLive && !isCur) bar.addView(iconCtl("@hibernasi") { ui.onHibernate(p); render() })
-                bar.addView(ctl("◀", idx > 0) { ui.onMove(p, -1); render() })
-                bar.addView(ctl("▶", idx < list.size - 1) { ui.onMove(p, 1); render() })
                 bar.addView(ctl("✕", true) { ui.onClose(p); render() })
                 tile.addView(bar, LinearLayout.LayoutParams(match, wrap).apply { topMargin = px(4) })
+                drag.add(tile, 0, main, tile)
                 rowLayout?.addView(tile, LinearLayout.LayoutParams(0, wrap, 1f).apply { if (idx % cols != 0) leftMargin = px(8) })
             }
             val rem = list.size % cols
@@ -421,16 +429,16 @@ fun showPagesSheet(a: Activity, ui: PagesUi) {
             })
             row.addView(info, LinearLayout.LayoutParams(0, wrap, 1f))
             if (p.isLive && !isCur) row.addView(iconCtl("@hibernasi") { ui.onHibernate(p); render() })
-            row.addView(ctl("▲", idx > 0) { ui.onMove(p, -1); render() })
-            row.addView(ctl("▼", idx < list.size - 1) { ui.onMove(p, 1); render() })
             row.addView(ctl("✕", true) { ui.onClose(p); render() })
             box.addView(row, LinearLayout.LayoutParams(match, wrap).apply { topMargin = px(8) })
+            drag.add(row, 0, info, row)
         }
     }
+    renderAgain = { render() }
     pagesRender = { render() }
     render()
     Favicons.fetchMissing(a, ui.pages().map { Favicons.hostOf(if (it.url.isNotBlank()) it.url else it.home) }) {
-        a.runOnUiThread { if (pagesDialog === d && d.isShowing) render() }
+        a.runOnUiThread { if (pagesDialog === d && d.isShowing && !drag.isDragging) render() }
     }
 
     d.show(root)
