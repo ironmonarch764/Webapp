@@ -560,7 +560,7 @@ class MainActivity : AppCompatActivity() {
         pageHost.addView(webView, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         // Tombol setengah lonjong di tepi kanan: Menu, Penyesuaian warna, Gulir, Page (bila fitur Page menyala)
         val sideTools = findViewById<LinearLayout>(R.id.menuBtn)
-        quickTools = QuickTools(sideTools, { showMenu() }, { showColorFilterSheet(this, webView, prefs) }, { showScrollPopup() }, { showPages() })
+        quickTools = QuickTools(sideTools, { showMenu() }, { showColorFilterSheet(this, { webView }, prefs) }, { showScrollPopup() }, { showPages() })
         refreshPageButton()
         fabCtl = FabController(webView, sideTools, { pickerActive }, { prefs.getBoolean("edge_on", true) }, { autoScroller.stop() }, { scheduleSave() }, { edgeSpeed() }, { edgeFraction() })
 
@@ -578,6 +578,7 @@ class MainActivity : AppCompatActivity() {
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
+                if (FloatingPanel.dismissCurrent()) return   // panel melayang (Situs / Page / Warna) ditutup dulu
                 if (popupView != null) closePopup()
                 else if (webView.canGoBack()) webView.goBack() else finish()
             }
@@ -1097,28 +1098,10 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
     }
 
     private fun askNewPage() {
-        val input = EditText(this).apply {
-            hint = "contoh: komiku.org"
-            inputType = InputType.TYPE_TEXT_VARIATION_URI
+        showFormPanel(this, "Page baru", listOf(FormField("contoh: komiku.org", "", true)), "Buka", true) { v, fail, close ->
+            val url = normalize(v[0])
+            if (url == null) fail("Alamat tidak valid") else { close(); openInNewPage(url) }
         }
-        val box = FrameLayout(this).apply {
-            val m = (20 * resources.displayMetrics.density).toInt()
-            setPadding(m, m / 2, m, 0); addView(input)
-        }
-        val dlg = AlertDialog.Builder(this)
-            .setTitle("Page baru")
-            .setView(box)
-            .setPositiveButton("Buka", null)
-            .setNegativeButton("Batal", null)
-            .create()
-        dlg.setOnShowListener {
-            dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-                val url = normalize(input.text.toString())
-                if (url == null) input.error = "Alamat tidak valid"
-                else { dlg.dismiss(); openInNewPage(url) }
-            }
-        }
-        dlg.show()
     }
 
     private fun showPages() {
@@ -1267,6 +1250,7 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
         idleHandler.removeCallbacksAndMessages(null)
         dismissPagesSheet()
         dismissSitesSheet()
+        FloatingPanel.dismissCurrent(true)               // panel melayang lain (Penyesuaian warna, kotak alamat)
         for (p in pages) destroyPageView(p)
         DnsProxy.stop(this)   // hanya bila Activity ini pemilik proxy (Activity lama tidak boleh mematikan milik yang baru)
         super.onDestroy()
@@ -1279,7 +1263,7 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
     private fun dnsUrl(): String? {
         val m = dnsMode()
         return when (m) {
-            "cloudflare", "google" -> DnsProxy.PRESETS[m]
+            "cloudflare", "google", "quad9" -> DnsProxy.PRESETS[m]
             "custom" -> prefs.getString("dns_custom", "")?.trim()?.takeIf { DnsProxy.validate(it) == null }
             else -> null
         }
@@ -1291,6 +1275,7 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
         val name = when (dnsMode()) {
             "cloudflare" -> "Cloudflare"
             "google" -> "Google"
+            "quad9" -> "Quad9"
             "custom" -> "Kustom"
             else -> "Sistem"
         }
@@ -1383,8 +1368,8 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
     }
 
     private fun showDnsDialog() {
-        val names = arrayOf("Sistem (bawaan HP)", "Cloudflare (1.1.1.1)", "Google (8.8.8.8)", "Kustom (alamat DoH)")
-        val keys = arrayOf("off", "cloudflare", "google", "custom")
+        val names = arrayOf("Sistem (bawaan HP)", "Cloudflare (1.1.1.1)", "Google (8.8.8.8)", "Quad9 (9.9.9.9)", "Kustom (alamat DoH)")
+        val keys = arrayOf("off", "cloudflare", "google", "quad9", "custom")
         val cur = keys.indexOf(prefs.getString("dns", "off")).coerceAtLeast(0)
         AlertDialog.Builder(this)
             .setTitle("DNS")
@@ -1408,7 +1393,7 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
             setPadding(m, m / 2, m, 0); addView(input)
         }
         val dlg = AlertDialog.Builder(this)
-            .setTitle("Alamat DoH (format JSON)")
+            .setTitle("Alamat DoH (standar atau JSON)")
             .setView(box)
             .setPositiveButton("Simpan", null)
             .setNegativeButton("Batal", null)
@@ -1488,35 +1473,16 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
     }
 
     private fun askUrl(cancelable: Boolean, choose: Boolean = false) {
-        val input = EditText(this).apply {
-            hint = "contoh: komiku.org"
-            inputType = InputType.TYPE_TEXT_VARIATION_URI
-            setText(currentUrl)
-            setSelection(text.length)
-        }
-        val box = FrameLayout(this).apply {
-            val m = (20 * resources.displayMetrics.density).toInt()
-            setPadding(m, m / 2, m, 0); addView(input)
-        }
-        val builder = AlertDialog.Builder(this)
-            .setTitle("Alamat web")
-            .setView(box)
-            .setCancelable(cancelable)
-            .setPositiveButton("Simpan", null)
-        if (cancelable) builder.setNegativeButton("Batal", null)
-        val dlg = builder.create()
-        dlg.setOnShowListener {
-            dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-                val url = normalize(input.text.toString())
-                if (url == null) input.error = "Alamat tidak valid"
-                else {
-                    dlg.dismiss()
-                    // fitur Page menyala: tanya buka di page sekarang atau page baru
-                    if (choose && pagesOn()) askPageTarget(url) else openInCurrent(url)
-                }
+        showFormPanel(this, "Alamat web", listOf(FormField("contoh: komiku.org", currentUrl, true)), "Simpan", cancelable) { v, fail, close ->
+            val url = normalize(v[0])
+            if (url == null) {
+                fail("Alamat tidak valid")
+            } else {
+                close()
+                // fitur Page menyala: tanya buka di page sekarang atau page baru
+                if (choose && pagesOn()) askPageTarget(url) else openInCurrent(url)
             }
         }
-        dlg.show()
     }
 
     private fun colorFilterActive(): Boolean =
@@ -1598,7 +1564,10 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
             listOf<SettingRow>(
                 SettingRow.Toggle("@autoscroll", "Gulir otomatis", "Halaman bergulir sendiri; panel kecepatan muncul di layar", autoPanel.modeOn) { on ->
                     if (on != autoPanel.modeOn) autoPanel.toggle()
-                    if (on) dismissMenuSheet()
+                    if (on) {
+                        dismissMenuSheet()
+                        FloatingPanel.dismissCurrent()   // panel Gulir otomatis memakai tempat yang sama di bawah layar
+                    }
                 }
             ) + edgeScrollRows()
         }
@@ -2097,55 +2066,32 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
 
     // Ubah nama/alamat situs tersimpan (tombol Edit di sheet Situs)
     private fun editSite(site: Site, done: () -> Unit) {
-        val dp = resources.displayMetrics.density
-        val nameIn = EditText(this).apply {
-            hint = "Nama"
-            inputType = InputType.TYPE_CLASS_TEXT
-            maxLines = 1
-            setText(site.name)
-        }
-        val urlIn = EditText(this).apply {
-            hint = "Alamat"
-            inputType = InputType.TYPE_TEXT_VARIATION_URI
-            maxLines = 1
-            setText(site.url)
-        }
-        val box = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            val m = (20 * dp).toInt()
-            setPadding(m, m / 2, m, 0)
-            addView(nameIn)
-            addView(urlIn)
-        }
-        val dlg = AlertDialog.Builder(this)
-            .setTitle("Ubah situs")
-            .setView(box)
-            .setPositiveButton("Simpan", null)
-            .setNegativeButton("Batal", null)
-            .create()
-        dlg.setOnShowListener {
-            dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-                val url = normalize(urlIn.text.toString())
-                if (url == null) {
-                    urlIn.error = "Alamat tidak valid"
-                    return@setOnClickListener
-                }
-                val list = loadSites()
-                val idx = list.indexOfFirst { it.url == site.url }
-                if (url != site.url && list.any { it.url == url }) {
-                    urlIn.error = "Alamat ini sudah ada di daftar"
-                    return@setOnClickListener
-                }
-                if (idx >= 0) {
-                    val name = nameIn.text.toString().trim().take(40).ifEmpty { Uri.parse(url).host?.removePrefix("www.") ?: url }
-                    list[idx] = Site(name, url, site.pinned)
-                    storeSites(list)
-                }
-                dlg.dismiss()
-                done()
+        // Panel melayang hanya satu pada satu waktu: daftar Situs dibuka lagi setelah Simpan / Batal
+        showFormPanel(
+            this, "Ubah situs",
+            listOf(FormField("Nama", site.name), FormField("Alamat", site.url, true)),
+            "Simpan", true,
+            onCancel = { showSites() }
+        ) { v, fail, close ->
+            val url = normalize(v[1])
+            if (url == null) {
+                fail("Alamat tidak valid")
+                return@showFormPanel
             }
+            val list = loadSites()
+            val idx = list.indexOfFirst { it.url == site.url }
+            if (url != site.url && list.any { it.url == url }) {
+                fail("Alamat ini sudah ada di daftar")
+                return@showFormPanel
+            }
+            if (idx >= 0) {
+                val name = v[0].trim().take(40).ifEmpty { Uri.parse(url).host?.removePrefix("www.") ?: url }
+                list[idx] = Site(name, url, site.pinned)
+                storeSites(list)
+            }
+            close()
+            showSites()
         }
-        dlg.show()
     }
 
     // Simpan alamat halaman yang sedang dibuka (bukan hanya alamat awal) ke daftar Situs
@@ -2170,49 +2116,27 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
 
     // Tulis alamat (dan nama, opsional) sendiri; hanya disimpan ke daftar, tidak langsung dibuka
     private fun addSiteManually() {
-        val dp = resources.displayMetrics.density
-        val nameIn = EditText(this).apply {
-            hint = "Nama (boleh kosong)"
-            inputType = InputType.TYPE_CLASS_TEXT
-            maxLines = 1
-        }
-        val urlIn = EditText(this).apply {
-            hint = "Alamat, contoh: komiku.org/baca/abc"
-            inputType = InputType.TYPE_TEXT_VARIATION_URI
-            maxLines = 1
-        }
-        val box = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            val m = (20 * dp).toInt()
-            setPadding(m, m / 2, m, 0)
-            addView(nameIn)
-            addView(urlIn)
-        }
-        val dlg = AlertDialog.Builder(this)
-            .setTitle("Simpan alamat")
-            .setView(box)
-            .setPositiveButton("Simpan", null)
-            .setNegativeButton("Batal", null)
-            .create()
-        dlg.setOnShowListener {
-            dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-                val url = normalize(urlIn.text.toString())
-                if (url == null) {
-                    urlIn.error = "Alamat tidak valid"
-                } else {
-                    val list = loadSites()
-                    val name = nameIn.text.toString().trim().take(40).ifEmpty { Uri.parse(url).host?.removePrefix("www.") ?: url }
-                    val idx = list.indexOfFirst { it.url == url }
-                    if (idx >= 0) list[idx] = Site(name, url, list[idx].pinned) else list.add(Site(name, url))
-                    storeSites(list)
-                    Toast.makeText(this, "Alamat tersimpan", Toast.LENGTH_SHORT).show()
-                    dlg.dismiss()
-                    showSites()
-                }
+        showFormPanel(
+            this, "Simpan alamat",
+            listOf(FormField("Nama (boleh kosong)"), FormField("Alamat, contoh: komiku.org/baca/abc", "", true)),
+            "Simpan", true
+        ) { v, fail, close ->
+            val url = normalize(v[1])
+            if (url == null) {
+                fail("Alamat tidak valid")
+            } else {
+                val list = loadSites()
+                val name = v[0].trim().take(40).ifEmpty { Uri.parse(url).host?.removePrefix("www.") ?: url }
+                val idx = list.indexOfFirst { it.url == url }
+                if (idx >= 0) list[idx] = Site(name, url, list[idx].pinned) else list.add(Site(name, url))
+                storeSites(list)
+                Toast.makeText(this, "Alamat tersimpan", Toast.LENGTH_SHORT).show()
+                close()
+                showSites()
             }
         }
-        dlg.show()
     }
+
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         outState.putLong("pageId", curPage.id)

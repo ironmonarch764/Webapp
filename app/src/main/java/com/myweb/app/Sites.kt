@@ -1,21 +1,17 @@
 package com.myweb.app
 
 import android.app.Activity
-import android.app.Dialog
 import android.graphics.Color
 import android.graphics.Typeface
-import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.text.TextUtils
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
-import android.view.Window
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
-import android.widget.ScrollView
 import android.widget.TextView
 
 // Satu situs tersimpan. pinned = disematkan (tampil paling atas). Urutan daftar = urutan yang diatur pengguna.
@@ -47,7 +43,7 @@ fun moveSite(list: MutableList<Site>, url: String, dir: Int): Boolean {
     return true
 }
 
-private var sitesDialog: Dialog? = null
+private var sitesDialog: FloatingPanel? = null
 
 fun dismissSitesSheet() {
     try { sitesDialog?.dismiss() } catch (e: Exception) { }
@@ -56,10 +52,10 @@ fun dismissSitesSheet() {
 
 fun showSitesSheet(a: Activity, ui: SitesUi) {
     dismissSitesSheet()
-    val d = Dialog(a)
+    // Panel melayang (bukan dialog): halaman di belakang tetap kelihatan dan bisa disentuh
+    val d = FloatingPanel(a)
     sitesDialog = d
-    d.setOnDismissListener { if (sitesDialog === d) sitesDialog = null }
-    d.requestWindowFeature(Window.FEATURE_NO_TITLE)
+    d.onDismiss = { if (sitesDialog === d) sitesDialog = null }
     val dp = a.resources.displayMetrics.density
     fun px(v: Int) = (v * dp).toInt()
     val match = ViewGroup.LayoutParams.MATCH_PARENT
@@ -75,14 +71,9 @@ fun showSitesSheet(a: Activity, ui: SitesUi) {
 
     val root = LinearLayout(a).apply {
         orientation = LinearLayout.VERTICAL
-        background = bg(Color.parseColor("#1F2024"), px(26).toFloat(), true)
-        setPadding(px(18), px(10), px(18), px(24))
+        setPadding(px(16), px(2), px(16), px(16))
     }
-    root.addView(View(a).apply { background = bg(0x44FFFFFF, px(3).toFloat(), false) },
-        LinearLayout.LayoutParams(px(40), px(5)).apply {
-            gravity = Gravity.CENTER_HORIZONTAL
-            bottomMargin = px(14)
-        })
+    root.addView(d.grip(), LinearLayout.LayoutParams(match, px(24)))
 
     // Baris judul: Situs | tampilan list | tampilan kotak | Edit
     val header = LinearLayout(a).apply {
@@ -137,7 +128,9 @@ fun showSitesSheet(a: Activity, ui: SitesUi) {
     root.addView(hint, LinearLayout.LayoutParams(match, wrap))
 
     val box = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL }
-    root.addView(ScrollView(a).apply { addView(box) }, LinearLayout.LayoutParams(match, wrap))
+    // Daftar menggulir di dalam panel; tinggi dibatasi supaya halaman di belakang tetap terlihat
+    val maxList = (a.resources.displayMetrics.heightPixels * 0.62f - px(210)).toInt().coerceAtLeast(px(120))
+    root.addView(MaxHeightScrollView(a, maxList).apply { addView(box) }, LinearLayout.LayoutParams(match, wrap))
 
     lateinit var render: () -> Unit
 
@@ -178,6 +171,7 @@ fun showSitesSheet(a: Activity, ui: SitesUi) {
             header.addView(iconBox("@edit", false, "Edit") { editMode = true; render() },
                 LinearLayout.LayoutParams(px(40), px(40)).apply { leftMargin = px(8) })
         }
+        header.addView(d.closeButton())
     }
 
     fun ctl(label: String, enabled: Boolean, size: Float, action: () -> Unit) = TextView(a).apply {
@@ -334,8 +328,8 @@ fun showSitesSheet(a: Activity, ui: SitesUi) {
                 box.addView(listRow(s, gi > 0, gi < grp.size - 1), LinearLayout.LayoutParams(match, wrap).apply { topMargin = px(8) })
             }
         } else {
-            val widthDp = a.resources.displayMetrics.widthPixels / dp
-            val cols = ((widthDp - 36f) / 104f).toInt().coerceIn(2, 4)
+            val widthDp = d.widthPx / dp
+            val cols = ((widthDp - 32f) / 104f).toInt().coerceIn(2, 4)
             var rowLayout: LinearLayout? = null
             ordered.forEachIndexed { i, s ->
                 if (i % cols == 0) {
@@ -363,13 +357,5 @@ fun showSitesSheet(a: Activity, ui: SitesUi) {
         a.runOnUiThread { if (sitesDialog === d && d.isShowing) render() }
     }
 
-    d.setContentView(root)
-    d.window?.apply {
-        setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
-        setLayout(match, wrap)
-        setGravity(Gravity.BOTTOM)
-        setDimAmount(0.55f)
-        attributes = attributes.apply { windowAnimations = android.R.style.Animation_InputMethod }
-    }
-    d.show()
+    d.show(root)
 }

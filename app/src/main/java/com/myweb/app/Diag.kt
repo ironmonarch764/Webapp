@@ -112,6 +112,11 @@ private fun exitName(r: Int): String = when (r) {
     ApplicationExitInfo.REASON_SIGNALED -> "dimatikan sistem (signal)"
     ApplicationExitInfo.REASON_USER_REQUESTED -> "dihentikan pengguna"
     ApplicationExitInfo.REASON_USER_STOPPED -> "dihentikan pengguna (pengaturan)"
+    12 -> "proses pendukung mati"                       // REASON_DEPENDENCY_DIED
+    13 -> "dihentikan sistem (lainnya, biasanya hemat baterai/RAM)"   // REASON_OTHER
+    14 -> "dibekukan sistem (freezer)"                   // REASON_FREEZER
+    15 -> "status paket berubah"                         // REASON_PACKAGE_STATE_CHANGE
+    16 -> "aplikasi diperbarui"                          // REASON_PACKAGE_UPDATED
     else -> "kode " + r
 }
 

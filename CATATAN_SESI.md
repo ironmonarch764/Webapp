@@ -134,3 +134,24 @@ Belum diuji / sisa: lihat laporan akhir sesi (build Kotlin/APK, perangkat nyata,
 - Ikon baru dipakai: sematkan, hibernasi, tutup otomatis, tambah page, urut/hapus. README.md ditambahkan.
 - Semua AlertDialog bergaya gelap lewat tema AppDialog (themes.xml, alertDialogTheme) + drawable bg_dialog.xml.
 - Sheet Page: tombol tampilan daftar/kotak (pref pages_view).
+
+## Menu Situs, Penyesuaian warna, dan Page jadi panel melayang - BELUM dikompilasi/diuji
+- FloatingPanel.kt (baru): kartu melayang seperti panel Gulir otomatis (bukan Dialog, tanpa redup, halaman di belakang tetap terlihat dan bisa digulir/disentuh). Satu panel pada satu waktu; ditutup lewat tombol ✕, tombol Kembali (MainActivity.handleOnBackPressed), atau setelah memilih. Bisa digeser dengan menyeret garis pegangan di atas kartu (dijaga tetap di dalam layar). MaxHeightScrollView membatasi tinggi daftar.
+- Sites.kt, Pages.kt: Dialog diganti FloatingPanel (isi dan perilaku daftar/kotak, Edit, sematkan, urut, hapus tidak berubah). Jumlah kolom kotak mengikuti lebar panel.
+- ColorFilterSheet.kt: showColorFilterSheet kini menerima fungsi `() -> WebView` (selalu WebView page aktif). Tata letak diringkas: slider satu baris (nama | slider | nilai), Reset pindah ke baris judul, bagian "Khusus gambar" dilipat (terbuka sendiri bila sudah ada nilainya). Ketuk tombol warna lagi = tutup.
+- MainActivity.kt: pemanggil disesuaikan; Kembali menutup panel dulu; onDestroy menutup panel; menyalakan Gulir otomatis menutup panel (tempatnya sama di bawah layar).
+- Lanjutan: dialog "Buka di mana?" (showPageTargetSheet) dan empat kotak isian alamat (Alamat web, Page baru, Ubah situs, Simpan alamat) juga jadi panel melayang. FloatingForm.kt (baru): showFormPanel (kolom isian gelap, galat di dalam panel, keyboard muncul otomatis, tombol Selesai di keyboard = OK). FloatingPanel.cancelable=false untuk alamat awal yang wajib diisi (Kembali ditelan, tidak digantikan panel lain). Ubah situs: daftar Situs dibuka lagi setelah Simpan/Batal (hanya satu panel melayang sekaligus). Tersisa AlertDialog biasa: konfirmasi dan pilihan di Pengaturan/Perlindungan.
+- Belum diuji: build Kotlin dan tampilan di perangkat (tidak ada Kotlin/Android SDK di sesi ini). Ukuran/posisi mudah diubah di FloatingPanel.kt (lebar maks 440dp, jarak bawah 28dp, sudut 24dp, warna #F01F2024).
+
+## Cek log diagnosa 11-08 (Xiaomi 2407FPN8EG, Android 16)
+- Tidak ada renderer mati, tidak ada crash baru, tidak ada henti saat di layar. Crash SocketException terakhir berumur ~10 hari (jalur DnsProxy lama) dan tidak muncul lagi.
+- "kode 13" = REASON_OTHER, "kode 16" = aplikasi diperbarui: bukan crash. Diag.kt kini memberi nama kode 12-16.
+- list0.txt (AdGuard) berhasil diunduh 4546 KB pada 11-08 00:09 (URL baru berfungsi). Puncak heap saat itu 152 MB dari batas 256 MB.
+- "profil Google: HTTP 400" di setiap percobaan sejak awal log: titik akhir tidak resmi ListAccounts menolak; tampilan akun kembali ke "sesi aktif". Penyebab belum diketahui.
+
+## DoH format standar (RFC 8484) + preset Quad9
+- Penyebab DNS Quad9 tidak tersambung: resolver hanya bicara DoH JSON (Accept dns-json, ?name=&type=), sedangkan Quad9 hanya standar (layanan JSON port 5053 ditutup 5 Mei 2025). http:// memang ditolak validateEndpoint (disengaja).
+- DohResolver.java: dua format. FORMAT_JSON (kueri ?name=&type=), FORMAT_WIRE (paket DNS biner di ?dns=<base64url>, Accept application/dns-message, ID 0, base64url buatan sendiri karena java.util.Base64 baru API 26), FORMAT_AUTO untuk alamat kustom: standar dulu (JSON dulu bila path berakhiran /resolve); bila server menolak (HTTP 400/404/405/406/415/501 atau isi bukan format itu) dicoba format lain, hasil diingat. Kegagalan jaringan/waktu habis/503 tidak memicu pergantian format. Aturan lama tetap: jawaban sah dihormati, hanya kegagalan transport -> DNS sistem. Pesan bila keduanya ditolak: "server tidak mendukung DoH standar maupun JSON (...)".
+- Transport.get kini punya varian 4-argumen dengan Accept (default method: transport uji lama tetap jalan). Konstruktor 6-argumen lama = JSON saja (tes lama tidak berubah). stats() menampilkan format=...
+- DnsProxy.kt: preset baru "quad9" = https://dns.quad9.net/dns-query (format standar). Cloudflare/Google tetap JSON, alamat kustom AUTO. MainActivity: pilihan "Quad9 (9.9.9.9)" di dialog DNS, judul dialog kustom "Alamat DoH (standar atau JSON)".
+- DohResolverSelfTest: 260 lulus / 0 gagal (tambah 51: paket kueri/jawaban, kompresi nama, CNAME, TTL, NXDOMAIN/diblokir, paket rusak, otomatis, server HTTP lokal). Kotlin belum dikompilasi.

@@ -2,11 +2,9 @@ package com.myweb.app
 
 import android.app.Activity
 import android.app.ActivityManager
-import android.app.Dialog
 import android.content.Context
 import android.content.SharedPreferences
 import android.graphics.Color
-import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Bundle
@@ -14,12 +12,10 @@ import android.text.TextUtils
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
-import android.view.Window
 import android.webkit.WebView
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
-import android.widget.ScrollView
 import android.widget.TextView
 import androidx.webkit.ScriptHandler
 import org.json.JSONArray
@@ -169,7 +165,7 @@ class PagesUi(
     val setGrid: (Boolean) -> Unit
 )
 
-private var pagesDialog: Dialog? = null
+private var pagesDialog: FloatingPanel? = null
 private var pagesRender: (() -> Unit)? = null
 
 fun dismissPagesSheet() {
@@ -185,12 +181,12 @@ fun refreshPagesSheet() {
 
 fun showPagesSheet(a: Activity, ui: PagesUi) {
     dismissPagesSheet()
-    val d = Dialog(a)
+    // Panel melayang (bukan dialog): halaman di belakang tetap kelihatan dan bisa disentuh
+    val d = FloatingPanel(a)
     pagesDialog = d
-    d.setOnDismissListener {
+    d.onDismiss = {
         if (pagesDialog === d) { pagesDialog = null; pagesRender = null }
     }
-    d.requestWindowFeature(Window.FEATURE_NO_TITLE)
     val dp = a.resources.displayMetrics.density
     fun px(v: Int) = (v * dp).toInt()
     val match = ViewGroup.LayoutParams.MATCH_PARENT
@@ -203,14 +199,9 @@ fun showPagesSheet(a: Activity, ui: PagesUi) {
 
     val root = LinearLayout(a).apply {
         orientation = LinearLayout.VERTICAL
-        background = bg(Color.parseColor("#1F2024"), px(26).toFloat(), true)
-        setPadding(px(18), px(10), px(18), px(24))
+        setPadding(px(16), px(2), px(16), px(16))
     }
-    root.addView(View(a).apply { background = bg(0x44FFFFFF, px(3).toFloat(), false) },
-        LinearLayout.LayoutParams(px(40), px(5)).apply {
-            gravity = Gravity.CENTER_HORIZONTAL
-            bottomMargin = px(14)
-        })
+    root.addView(d.grip(), LinearLayout.LayoutParams(match, px(24)))
 
     val head = LinearLayout(a).apply {
         orientation = LinearLayout.HORIZONTAL
@@ -226,6 +217,7 @@ fun showPagesSheet(a: Activity, ui: PagesUi) {
     var gridMode = ui.grid()
     val toggles = LinearLayout(a).apply { orientation = LinearLayout.HORIZONTAL }
     head.addView(toggles)
+    head.addView(d.closeButton())
     root.addView(head, LinearLayout.LayoutParams(match, wrap))
 
     val infoRow = LinearLayout(a).apply {
@@ -273,7 +265,9 @@ fun showPagesSheet(a: Activity, ui: PagesUi) {
     root.addView(btnRow, LinearLayout.LayoutParams(match, wrap).apply { topMargin = px(12); bottomMargin = px(4) })
 
     val box = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL }
-    root.addView(ScrollView(a).apply { addView(box) }, LinearLayout.LayoutParams(match, wrap))
+    // Daftar menggulir di dalam panel; tinggi dibatasi supaya halaman di belakang tetap terlihat
+    val maxList = (a.resources.displayMetrics.heightPixels * 0.62f - px(230)).toInt().coerceAtLeast(px(120))
+    root.addView(MaxHeightScrollView(a, maxList).apply { addView(box) }, LinearLayout.LayoutParams(match, wrap))
 
     fun ctl(label: String, enabled: Boolean, action: () -> Unit) = TextView(a).apply {
         text = label
@@ -324,8 +318,8 @@ fun showPagesSheet(a: Activity, ui: PagesUi) {
 
         // Tampilan kotak: logo, judul, status, dan kontrol kecil di tiap kotak
         fun gridTiles() {
-            val widthDp = a.resources.displayMetrics.widthPixels / dp
-            val cols = ((widthDp - 36f) / 150f).toInt().coerceIn(2, 3)
+            val widthDp = d.widthPx / dp
+            val cols = ((widthDp - 32f) / 150f).toInt().coerceIn(2, 3)
             var rowLayout: LinearLayout? = null
             list.forEachIndexed { idx, p ->
                 val isCur = p.id == cur
@@ -439,21 +433,12 @@ fun showPagesSheet(a: Activity, ui: PagesUi) {
         a.runOnUiThread { if (pagesDialog === d && d.isShowing) render() }
     }
 
-    d.setContentView(root)
-    d.window?.apply {
-        setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
-        setLayout(match, wrap)
-        setGravity(Gravity.BOTTOM)
-        setDimAmount(0.55f)
-        attributes = attributes.apply { windowAnimations = android.R.style.Animation_InputMethod }
-    }
-    d.show()
+    d.show(root)
 }
 
 // Pilihan "buka di mana" (menggantikan dialog putih biasa): dua kartu besar, Page baru disorot
 fun showPageTargetSheet(a: Activity, url: String, info: String, onCurrent: () -> Unit, onNew: () -> Unit) {
-    val d = Dialog(a)
-    d.requestWindowFeature(Window.FEATURE_NO_TITLE)
+    val d = FloatingPanel(a)
     val dp = a.resources.displayMetrics.density
     fun px(v: Int) = (v * dp).toInt()
     val match = ViewGroup.LayoutParams.MATCH_PARENT
@@ -465,11 +450,9 @@ fun showPageTargetSheet(a: Activity, url: String, info: String, onCurrent: () ->
     val host = Favicons.hostOf(url)
     val root = LinearLayout(a).apply {
         orientation = LinearLayout.VERTICAL
-        background = bg(Color.parseColor("#1F2024"), px(26).toFloat(), true)
-        setPadding(px(18), px(10), px(18), px(24))
+        setPadding(px(16), px(2), px(16), px(16))
     }
-    root.addView(View(a).apply { background = bg(0x44FFFFFF, px(3).toFloat(), false) },
-        LinearLayout.LayoutParams(px(40), px(5)).apply { gravity = Gravity.CENTER_HORIZONTAL; bottomMargin = px(16) })
+    root.addView(d.grip(), LinearLayout.LayoutParams(match, px(24)))
 
     val head = LinearLayout(a).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
     head.addView(Favicons.badge(a, host, host, px(44)), LinearLayout.LayoutParams(px(44), px(44)).apply { rightMargin = px(12) })
@@ -488,6 +471,7 @@ fun showPageTargetSheet(a: Activity, url: String, info: String, onCurrent: () ->
         setTextColor(Color.parseColor("#9AA0AC"))
     })
     head.addView(ht, LinearLayout.LayoutParams(0, wrap, 1f))
+    head.addView(d.closeButton())
     root.addView(head, LinearLayout.LayoutParams(match, wrap).apply { bottomMargin = px(14) })
 
     fun card(icon: String, title: String, sub: String, primary: Boolean, action: () -> Unit) {
@@ -531,13 +515,5 @@ fun showPageTargetSheet(a: Activity, url: String, info: String, onCurrent: () ->
         }, LinearLayout.LayoutParams(match, wrap))
     }
 
-    d.setContentView(root)
-    d.window?.apply {
-        setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
-        setLayout(match, wrap)
-        setGravity(Gravity.BOTTOM)
-        setDimAmount(0.55f)
-        attributes = attributes.apply { windowAnimations = android.R.style.Animation_InputMethod }
-    }
-    d.show()
+    d.show(root)
 }

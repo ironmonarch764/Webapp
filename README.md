@@ -11,7 +11,7 @@ pustaka pihak ketiga selain AndroidX.
 ## Fitur
 
 **Membaca**
-- Layar penuh dengan tombol setengah lonjong di tepi kanan: Menu, Penyesuaian warna, Gulir, dan Page.
+- Layar penuh dengan tombol setengah lonjong di tepi kanan: Menu, Penyesuaian warna, Gulir, dan Page. Situs, Page, dan Penyesuaian warna terbuka sebagai panel melayang (halaman tetap terlihat, panel bisa digeser).
 - Gulir otomatis (kecepatan diatur) dan gulir ketuk-tepi (ketuk tepi layar untuk turun/naik satu layar).
 - Lanjut membaca: halaman dan posisi terakhir diingat, bahkan setelah aplikasi dimatikan sistem.
 - Pramuat gambar di depan posisi baca, menyesuaikan koneksi dan RAM.
@@ -35,7 +35,7 @@ pustaka pihak ketiga selain AndroidX.
 **Privasi dan keamanan**
 - Pemblokir iklan dan pelacak (daftar filter diperbarui berkala), pemblokir popup, pembersih parameter pelacak,
   perlindungan tautan AMP, GPC, perlindungan sidik jari dasar, blokir cookie pihak ketiga, paksa HTTPS.
-- DNS aman (DNS-over-HTTPS) lewat proxy lokal: Cloudflare, Google, atau alamat sendiri.
+- DNS aman (DNS-over-HTTPS) lewat proxy lokal: Cloudflare, Google, Quad9, atau alamat sendiri (format standar RFC 8484 maupun JSON, dipilih otomatis).
 - Penyembunyi elemen iklan: tandai bagian halaman yang mengganggu.
 - Masuk dengan Google di dalam aplikasi, dan daftar sesi situs untuk keluar per situs.
 - Log diagnosa lokal (tanpa alamat situs, cookie, atau isi halaman) dan spanduk merah saat aplikasi sebelumnya berhenti.

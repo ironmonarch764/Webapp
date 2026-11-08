@@ -1,23 +1,18 @@
 package com.myweb.app
 
 import android.app.Activity
-import android.app.Dialog
 import android.content.SharedPreferences
 import android.graphics.Color
 import android.graphics.ColorMatrix
 import android.graphics.ColorMatrixColorFilter
 import android.graphics.Paint
-import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
-import android.view.Window
 import android.webkit.WebView
-import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
-import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.TextView
 import org.json.JSONObject
@@ -118,72 +113,68 @@ fun applyImageFx(webView: WebView, prefs: SharedPreferences) {
     webView.evaluateJavascript(js, null)
 }
 
-fun showColorFilterSheet(a: Activity, webView: WebView, prefs: SharedPreferences) {
+private var colorPanel: FloatingPanel? = null
+
+// Panel melayang Penyesuaian warna (seperti panel Auto-scroll): halaman tetap kelihatan dan bisa digulir saat
+// slider digeser, jadi hasilnya langsung terlihat. Ketuk tombol warna lagi / ✕ / Kembali = tutup.
+// webView berupa fungsi supaya selalu memakai WebView page yang sedang aktif.
+fun showColorFilterSheet(a: Activity, webView: () -> WebView, prefs: SharedPreferences) {
+    val existing = colorPanel
+    if (existing != null && existing.isShowing) {
+        existing.dismiss()
+        return
+    }
     val match = ViewGroup.LayoutParams.MATCH_PARENT
     val wrap = ViewGroup.LayoutParams.WRAP_CONTENT
-
-    val d = Dialog(a)
-    d.requestWindowFeature(Window.FEATURE_NO_TITLE)
-    d.setCancelable(true)
-    d.setCanceledOnTouchOutside(true)
     val dp = a.resources.displayMetrics.density
     fun px(v: Int) = (v * dp).toInt()
 
-    val sheetBg = GradientDrawable().apply {
-        setColor(Color.parseColor("#EE1F2024"))
-        val r = px(26).toFloat()
-        cornerRadii = floatArrayOf(r, r, r, r, 0f, 0f, 0f, 0f)
-    }
+    val d = FloatingPanel(a)
+    colorPanel = d
+    d.onDismiss = { if (colorPanel === d) colorPanel = null }
+
     val root = LinearLayout(a).apply {
         orientation = LinearLayout.VERTICAL
-        background = sheetBg
-        setPadding(px(20), px(16), px(20), px(24))
-        isClickable = true
+        setPadding(px(16), px(2), px(16), px(14))
     }
-
-    root.addView(TextView(a).apply {
-        text = "🎨 Penyesuaian warna"
-        textSize = 18f
-        setTextColor(Color.WHITE)
-    }, LinearLayout.LayoutParams(match, wrap))
+    root.addView(d.grip(), LinearLayout.LayoutParams(match, px(24)))
 
     class Slider(val bar: SeekBar, val key: String, val def: Int)
     val sliders = ArrayList<Slider>()
 
-    // centered = true  -> tengah (50) tampil 0, rentang -50..+50
-    // centered = false -> mulai dari 0, rentang 0..+100
-    // live = true      -> diterapkan saat digeser; false -> saat jari dilepas
-    fun addSlider(label: String, key: String, def: Int, centered: Boolean, live: Boolean, onApply: () -> Unit) {
-        fun fmt(p: Int): String {
-            val v = if (centered) p - 50 else p
-            return if (v > 0) "+" + v else v.toString()
-        }
-        val tv = TextView(a).apply {
-            text = label + ":  " + fmt(prefs.getInt(key, def))
-            textSize = 14f
-            setTextColor(Color.parseColor("#D0D3DC"))
-        }
-        root.addView(tv, LinearLayout.LayoutParams(match, wrap).apply { topMargin = px(8) })
+    val colorApply: () -> Unit = { applyColorFilter(webView(), prefs) }
+    val fxApply: () -> Unit = { applyImageFx(webView(), prefs) }
 
-        val sb = SeekBar(a).apply {
-            max = 100
-            progress = prefs.getInt(key, def)
-            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                override fun onProgressChanged(s: SeekBar?, p: Int, fromUser: Boolean) {
-                    tv.text = label + ":  " + fmt(p)
-                    if (!fromUser) return
-                    prefs.edit().putInt(key, p).apply()
-                    if (live) onApply()
-                }
-                override fun onStartTrackingTouch(s: SeekBar?) {}
-                override fun onStopTrackingTouch(s: SeekBar?) { if (!live) onApply() }
-            })
-        }
-        root.addView(sb, LinearLayout.LayoutParams(match, wrap))
-        sliders.add(Slider(sb, key, def))
+    // Baris judul: judul | Reset | ✕
+    val head = LinearLayout(a).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
     }
-
-    val colorApply: () -> Unit = { applyColorFilter(webView, prefs) }
+    head.addView(TextView(a).apply {
+        text = "🎨 Penyesuaian warna"
+        textSize = 16f
+        setTextColor(Color.WHITE)
+        setTypeface(null, android.graphics.Typeface.BOLD)
+    }, LinearLayout.LayoutParams(0, wrap, 1f))
+    head.addView(TextView(a).apply {
+        text = "Reset"
+        textSize = 13f
+        setTextColor(Color.parseColor("#BFD3FF"))
+        gravity = Gravity.CENTER
+        background = GradientDrawable().apply { setColor(Color.parseColor("#26324A")); cornerRadius = px(16).toFloat() }
+        setPadding(px(14), px(7), px(14), px(7))
+        isClickable = true
+        setOnClickListener {
+            val e = prefs.edit()
+            sliders.forEach { e.putInt(it.key, it.def) }
+            e.apply()
+            sliders.forEach { it.bar.progress = it.def }
+            colorApply()
+            fxApply()
+        }
+    }, LinearLayout.LayoutParams(wrap, wrap))
+    head.addView(d.closeButton())
+    root.addView(head, LinearLayout.LayoutParams(match, wrap))
 
     // Preset siap pakai (urutan nilai: kecerahan, kontras, saturasi, dingin/hangat). Setelah dipilih, tiap slider
     // masih bisa disesuaikan sendiri.
@@ -201,7 +192,7 @@ fun showColorFilterSheet(a: Activity, webView: WebView, prefs: SharedPreferences
             textSize = 13f
             setTextColor(Color.WHITE)
             background = GradientDrawable().apply { setColor(Color.parseColor("#2A2C33")); cornerRadius = px(16).toFloat() }
-            setPadding(px(14), px(8), px(14), px(8))
+            setPadding(px(14), px(7), px(14), px(7))
             isClickable = true
             setOnClickListener {
                 val e = prefs.edit()
@@ -218,59 +209,92 @@ fun showColorFilterSheet(a: Activity, webView: WebView, prefs: SharedPreferences
     root.addView(HorizontalScrollView(a).apply {
         isHorizontalScrollBarEnabled = false
         addView(chipRow)
-    }, LinearLayout.LayoutParams(match, wrap).apply { topMargin = px(10); bottomMargin = px(2) })
-    val fxApply: () -> Unit = { applyImageFx(webView, prefs) }
+    }, LinearLayout.LayoutParams(match, wrap).apply { topMargin = px(8); bottomMargin = px(2) })
 
-    addSlider("Kecerahan", "cf_b", CF_DEFAULT, true, true, colorApply)
-    addSlider("Kontras", "cf_c", CF_DEFAULT, true, true, colorApply)
-    addSlider("Saturasi", "cf_s", CF_DEFAULT, true, true, colorApply)
-    addSlider("Dingin / Hangat", "cf_w", CF_DEFAULT, true, true, colorApply)
-
-    root.addView(TextView(a).apply {
-        text = "Khusus gambar (diterapkan setelah slider dilepas)"
-        textSize = 12f
-        setTextColor(Color.parseColor("#8A8E99"))
-    }, LinearLayout.LayoutParams(match, wrap).apply { topMargin = px(16) })
-
-    addSlider("Haluskan gambar", "fx_sm", 0, false, false, fxApply)
-    addSlider("Ketajaman gambar", "fx_sh", 0, false, false, fxApply)
-
-    val resetBg = GradientDrawable().apply {
-        setColor(Color.parseColor("#2A2C33"))
-        cornerRadius = px(18).toFloat()
-    }
-    root.addView(TextView(a).apply {
-        text = "Reset"
-        textSize = 16f
-        setTextColor(Color.WHITE)
-        gravity = Gravity.CENTER
-        background = resetBg
-        setPadding(0, px(12), 0, px(12))
-        isClickable = true
-        setOnClickListener {
-            val e = prefs.edit()
-            sliders.forEach { e.putInt(it.key, it.def) }
-            e.apply()
-            sliders.forEach { it.bar.progress = it.def }
-            applyColorFilter(webView, prefs)
-            applyImageFx(webView, prefs)
+    // Slider ringkas satu baris: nama | slider | nilai
+    // centered = true  -> tengah (50) tampil 0, rentang -50..+50
+    // centered = false -> mulai dari 0, rentang 0..+100
+    // live = true      -> diterapkan saat digeser; false -> saat jari dilepas
+    fun addSlider(parent: LinearLayout, label: String, key: String, def: Int, centered: Boolean, live: Boolean, onApply: () -> Unit) {
+        fun fmt(p: Int): String {
+            val v = if (centered) p - 50 else p
+            return if (v > 0) "+" + v else v.toString()
         }
-    }, LinearLayout.LayoutParams(match, wrap).apply { topMargin = px(16) })
-
-    // Seluruh layar jadi area ketuk: ketuk di luar panel = tutup (tanpa redup, agar warna terlihat asli)
-    val scroll = ScrollView(a)
-    scroll.addView(root)
-    val overlay = FrameLayout(a)
-    overlay.setOnClickListener { d.dismiss() }
-    overlay.addView(scroll, FrameLayout.LayoutParams(match, wrap, Gravity.BOTTOM))
-
-    d.setContentView(overlay)
-    d.window?.apply {
-        setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
-        setLayout(match, match)
-        setDimAmount(0f)
-        attributes = attributes.apply { windowAnimations = android.R.style.Animation_InputMethod }
+        val row = LinearLayout(a).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        row.addView(TextView(a).apply {
+            text = label
+            textSize = 12.5f
+            maxLines = 1
+            setTextColor(Color.parseColor("#D0D3DC"))
+        }, LinearLayout.LayoutParams(px(100), wrap))
+        val tv = TextView(a).apply {
+            text = fmt(prefs.getInt(key, def))
+            textSize = 12.5f
+            gravity = Gravity.END or Gravity.CENTER_VERTICAL
+            setTextColor(Color.WHITE)
+        }
+        val sb = SeekBar(a).apply {
+            max = 100
+            progress = prefs.getInt(key, def)
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(s: SeekBar?, p: Int, fromUser: Boolean) {
+                    tv.text = fmt(p)
+                    if (!fromUser) return
+                    prefs.edit().putInt(key, p).apply()
+                    if (live) onApply()
+                }
+                override fun onStartTrackingTouch(s: SeekBar?) {}
+                override fun onStopTrackingTouch(s: SeekBar?) { if (!live) onApply() }
+            })
+        }
+        row.addView(sb, LinearLayout.LayoutParams(0, wrap, 1f))
+        row.addView(tv, LinearLayout.LayoutParams(px(34), wrap))
+        parent.addView(row, LinearLayout.LayoutParams(match, px(40)))
+        sliders.add(Slider(sb, key, def))
     }
-    d.show()
-}
 
+    // Isi yang bisa digulir bila layar pendek
+    val box = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL }
+    val maxBox = (a.resources.displayMetrics.heightPixels * 0.5f).toInt().coerceAtLeast(px(160))
+    root.addView(MaxHeightScrollView(a, maxBox).apply { addView(box) },
+        LinearLayout.LayoutParams(match, wrap).apply { topMargin = px(4) })
+
+    addSlider(box, "Kecerahan", "cf_b", CF_DEFAULT, true, true, colorApply)
+    addSlider(box, "Kontras", "cf_c", CF_DEFAULT, true, true, colorApply)
+    addSlider(box, "Saturasi", "cf_s", CF_DEFAULT, true, true, colorApply)
+    addSlider(box, "Dingin / Hangat", "cf_w", CF_DEFAULT, true, true, colorApply)
+
+    // Bagian khusus gambar dilipat supaya panel tetap ringkas (terbuka sendiri bila sudah ada nilainya)
+    val fxBox = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL }
+    fxBox.addView(TextView(a).apply {
+        text = "Diterapkan setelah slider dilepas"
+        textSize = 11.5f
+        setTextColor(Color.parseColor("#8A8E99"))
+    }, LinearLayout.LayoutParams(match, wrap))
+    addSlider(fxBox, "Haluskan", "fx_sm", 0, false, false, fxApply)
+    addSlider(fxBox, "Ketajaman", "fx_sh", 0, false, false, fxApply)
+
+    val fxOpen = prefs.getInt("fx_sm", 0) != 0 || prefs.getInt("fx_sh", 0) != 0
+    fxBox.visibility = if (fxOpen) View.VISIBLE else View.GONE
+    val fxToggle = TextView(a).apply {
+        textSize = 13f
+        setTextColor(Color.parseColor("#BFD3FF"))
+        setPadding(0, px(10), 0, px(6))
+        isClickable = true
+    }
+    fun fxLabel() {
+        fxToggle.text = "Khusus gambar  " + (if (fxBox.visibility == View.VISIBLE) "▾" else "▸")
+    }
+    fxToggle.setOnClickListener {
+        fxBox.visibility = if (fxBox.visibility == View.VISIBLE) View.GONE else View.VISIBLE
+        fxLabel()
+    }
+    fxLabel()
+    box.addView(fxToggle, LinearLayout.LayoutParams(match, wrap))
+    box.addView(fxBox, LinearLayout.LayoutParams(match, wrap))
+
+    d.show(root)
+}

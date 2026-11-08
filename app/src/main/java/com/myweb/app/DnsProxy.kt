@@ -15,7 +15,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicLong
 
 // Proxy lokal kecil (127.0.0.1, port acak) yang dipakai WebView. Tugasnya hanya MENCARI ALAMAT IP lewat DNS-over-HTTPS
-// (Cloudflare / Google / alamat sendiri, format JSON), lalu meneruskan data apa adanya. HTTPS tetap tersambung langsung
+// (Cloudflare / Google / Quad9 / alamat sendiri; format JSON atau standar RFC 8484), lalu meneruskan data apa adanya. HTTPS tetap tersambung langsung
 // dari WebView ke situs (terenkripsi ujung ke ujung), jadi login/cookie/Cloudflare tidak terganggu.
 // Logika DNS (validasi, cache TTL, cadangan, pembatasan waktu) ada di DohResolver.java (diuji di JVM).
 // Aturan cadangan: HANYA kegagalan transport DoH (jaringan/TLS/waktu habis/HTTP error/isi bukan JSON DNS) yang beralih ke
@@ -24,8 +24,17 @@ object DnsProxy {
 
     val PRESETS = mapOf(
         "cloudflare" to "https://1.1.1.1/dns-query",
-        "google" to "https://8.8.8.8/resolve"
+        "google" to "https://8.8.8.8/resolve",
+        "quad9" to "https://dns.quad9.net/dns-query"
     )
+
+    // Preset memakai format yang sudah pasti (Cloudflare/Google: JSON, Quad9: standar RFC 8484).
+    // Alamat kustom: format dipilih otomatis (standar dulu, JSON bila server menolak).
+    private fun formatFor(url: String): Int = when (url) {
+        PRESETS["quad9"] -> DohResolver.FORMAT_WIRE
+        PRESETS["cloudflare"], PRESETS["google"] -> DohResolver.FORMAT_JSON
+        else -> DohResolver.FORMAT_AUTO
+    }
 
     @Volatile private var server: ServerSocket? = null
     @Volatile private var resolver: DohResolver? = null
@@ -44,7 +53,7 @@ object DnsProxy {
     fun probe(doh: String): String? {
         val err = DohResolver.validateEndpoint(doh)
         if (err != null) return err
-        return try { DohResolver.create(doh, pool, null).probe() } catch (e: Exception) { "gagal menguji" }
+        return try { DohResolver.create(doh, pool, null, formatFor(doh)).probe() } catch (e: Exception) { "gagal menguji" }
     }
 
     fun stats(): String {
@@ -73,7 +82,7 @@ object DnsProxy {
         // konfigurasi DoH berubah -> resolver baru (cache lama ikut dibuang, permintaan lama dibatalkan)
         if (resolver == null || endpoint != doh) {
             val old = resolver
-            resolver = DohResolver.create(doh, pool) { m -> listener?.invoke(m) }
+            resolver = DohResolver.create(doh, pool, { m -> listener?.invoke(m) }, formatFor(doh))
             endpoint = doh
             old?.close()
         }
