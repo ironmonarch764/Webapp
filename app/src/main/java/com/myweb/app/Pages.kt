@@ -16,6 +16,8 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.Window
 import android.webkit.WebView
+import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -162,7 +164,9 @@ class PagesUi(
     val onMove: (Page, Int) -> Unit,
     val onHibernate: (Page) -> Unit,
     val onNewPage: () -> Unit,
-    val onFromSites: () -> Unit
+    val onFromSites: () -> Unit,
+    val grid: () -> Boolean,
+    val setGrid: (Boolean) -> Unit
 )
 
 private var pagesDialog: Dialog? = null
@@ -218,7 +222,10 @@ fun showPagesSheet(a: Activity, ui: PagesUi) {
         textSize = 18f
         setTextColor(Color.WHITE)
         setTypeface(null, android.graphics.Typeface.BOLD)
-    })
+    }, LinearLayout.LayoutParams(0, wrap, 1f))
+    var gridMode = ui.grid()
+    val toggles = LinearLayout(a).apply { orientation = LinearLayout.HORIZONTAL }
+    head.addView(toggles)
     root.addView(head, LinearLayout.LayoutParams(match, wrap))
 
     val infoRow = LinearLayout(a).apply {
@@ -250,7 +257,17 @@ fun showPagesSheet(a: Activity, ui: PagesUi) {
         setOnClickListener { action() }
     }
     val btnRow = LinearLayout(a).apply { orientation = LinearLayout.HORIZONTAL }
-    btnRow.addView(secondaryBtn("＋  Page baru", true) { d.dismiss(); ui.onNewPage() }, LinearLayout.LayoutParams(0, wrap, 1f))
+    val newBtn = LinearLayout(a).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER
+        background = bg(Color.parseColor("#2563EB"), px(16).toFloat(), false)
+        setPadding(px(6), px(10), px(6), px(10))
+        isClickable = true
+        setOnClickListener { d.dismiss(); ui.onNewPage() }
+    }
+    newBtn.addView(Icons.make(a, "@tambah_page", 16f), LinearLayout.LayoutParams(px(22), px(22)).apply { rightMargin = px(8) })
+    newBtn.addView(TextView(a).apply { text = "Page baru"; textSize = 14f; setTextColor(Color.WHITE) })
+    btnRow.addView(newBtn, LinearLayout.LayoutParams(0, wrap, 1f))
     btnRow.addView(secondaryBtn("🔖 Situs tersimpan", false) { d.dismiss(); ui.onFromSites() },
         LinearLayout.LayoutParams(0, wrap, 1f).apply { leftMargin = px(8) })
     root.addView(btnRow, LinearLayout.LayoutParams(match, wrap).apply { topMargin = px(12); bottomMargin = px(4) })
@@ -270,7 +287,30 @@ fun showPagesSheet(a: Activity, ui: PagesUi) {
         }
     }
 
+    fun iconCtl(key: String, action: () -> Unit): View {
+        val v = Icons.make(a, key, 14f)
+        v.setPadding(px(8), px(8), px(8), px(8))
+        v.isClickable = true
+        v.setOnClickListener { action() }
+        return FrameLayout(a).apply { addView(v, FrameLayout.LayoutParams(px(38), px(38))) }
+    }
+
+    fun viewToggle(key: String, active: Boolean, desc: String, click: () -> Unit): View = FrameLayout(a).apply {
+        contentDescription = desc
+        background = bg(if (active) Color.parseColor("#2C3A5A") else Color.TRANSPARENT, px(12).toFloat(), false)
+        isClickable = true
+        setOnClickListener { click() }
+        addView(Icons.make(a, key, 18f), FrameLayout.LayoutParams(px(24), px(24), Gravity.CENTER))
+    }
+
     fun render() {
+        toggles.removeAllViews()
+        toggles.addView(viewToggle("@view_list", !gridMode, "Tampilan daftar") {
+            if (gridMode) { gridMode = false; ui.setGrid(false); render() }
+        }, LinearLayout.LayoutParams(px(40), px(40)))
+        toggles.addView(viewToggle("@view_grid", gridMode, "Tampilan kotak") {
+            if (!gridMode) { gridMode = true; ui.setGrid(true); render() }
+        }, LinearLayout.LayoutParams(px(40), px(40)).apply { leftMargin = px(4) })
         val list = ui.pages()
         val cur = ui.currentId()
         infoTv.text = list.size.toString() + " page  ·  " + ui.liveCount() + " aktif (batas " + ui.limit() + ")"
@@ -281,6 +321,74 @@ fun showPagesSheet(a: Activity, ui: PagesUi) {
             warnTv.visibility = View.GONE
         }
         box.removeAllViews()
+
+        // Tampilan kotak: logo, judul, status, dan kontrol kecil di tiap kotak
+        fun gridTiles() {
+            val widthDp = a.resources.displayMetrics.widthPixels / dp
+            val cols = ((widthDp - 36f) / 150f).toInt().coerceIn(2, 3)
+            var rowLayout: LinearLayout? = null
+            list.forEachIndexed { idx, p ->
+                val isCur = p.id == cur
+                if (idx % cols == 0) {
+                    val rl = LinearLayout(a).apply { orientation = LinearLayout.HORIZONTAL }
+                    box.addView(rl, LinearLayout.LayoutParams(match, wrap).apply { topMargin = px(8) })
+                    rowLayout = rl
+                }
+                val tile = LinearLayout(a).apply {
+                    orientation = LinearLayout.VERTICAL
+                    gravity = Gravity.CENTER_HORIZONTAL
+                    background = GradientDrawable().apply {
+                        cornerRadius = px(16).toFloat()
+                        setColor(Color.parseColor(if (isCur) "#1E3556" else "#2A2C33"))
+                        if (isCur) setStroke(px(1), Color.parseColor("#5B8CFF"))
+                    }
+                    setPadding(px(6), px(12), px(6), px(4))
+                }
+                val main = LinearLayout(a).apply {
+                    orientation = LinearLayout.VERTICAL
+                    gravity = Gravity.CENTER_HORIZONTAL
+                    isClickable = true
+                    setOnClickListener { d.dismiss(); ui.onSwitch(p) }
+                }
+                main.addView(Favicons.badge(a, Favicons.hostOf(if (p.url.isNotBlank()) p.url else p.home), p.label(), px(44)),
+                    LinearLayout.LayoutParams(px(44), px(44)))
+                main.addView(TextView(a).apply {
+                    text = p.label()
+                    textSize = 13f
+                    typeface = android.graphics.Typeface.DEFAULT_BOLD
+                    maxLines = 2
+                    ellipsize = TextUtils.TruncateAt.END
+                    gravity = Gravity.CENTER
+                    setTextColor(if (isCur) Color.parseColor("#BFD3FF") else Color.WHITE)
+                    setPadding(px(4), px(8), px(4), 0)
+                }, LinearLayout.LayoutParams(match, wrap))
+                main.addView(TextView(a).apply {
+                    text = if (isCur) "Sedang dibuka" else if (p.isLive) "Aktif" else "💤 Hibernasi"
+                    textSize = 11f
+                    gravity = Gravity.CENTER
+                    setTextColor(Color.parseColor(if (p.isLive) "#7FD6A0" else "#9AA0AC"))
+                }, LinearLayout.LayoutParams(match, wrap))
+                tile.addView(main, LinearLayout.LayoutParams(match, wrap))
+                val bar = LinearLayout(a).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
+                if (p.isLive && !isCur) bar.addView(iconCtl("@hibernasi") { ui.onHibernate(p); render() })
+                bar.addView(ctl("◀", idx > 0) { ui.onMove(p, -1); render() })
+                bar.addView(ctl("▶", idx < list.size - 1) { ui.onMove(p, 1); render() })
+                bar.addView(ctl("✕", true) { ui.onClose(p); render() })
+                tile.addView(bar, LinearLayout.LayoutParams(match, wrap).apply { topMargin = px(4) })
+                rowLayout?.addView(tile, LinearLayout.LayoutParams(0, wrap, 1f).apply { if (idx % cols != 0) leftMargin = px(8) })
+            }
+            val rem = list.size % cols
+            if (rem != 0) {
+                for (k in 0 until cols - rem) {
+                    rowLayout?.addView(View(a), LinearLayout.LayoutParams(0, 1, 1f).apply { leftMargin = px(8) })
+                }
+            }
+        }
+        if (gridMode) {
+            gridTiles()
+            return
+        }
+
         list.forEachIndexed { idx, p ->
             val isCur = p.id == cur
             val row = LinearLayout(a).apply {
@@ -293,6 +401,8 @@ fun showPagesSheet(a: Activity, ui: PagesUi) {
                 }
                 setPadding(px(14), px(10), px(4), px(10))
             }
+            row.addView(Favicons.badge(a, Favicons.hostOf(if (p.url.isNotBlank()) p.url else p.home), p.label(), px(36)),
+                LinearLayout.LayoutParams(px(36), px(36)).apply { rightMargin = px(12) })
             val info = LinearLayout(a).apply {
                 orientation = LinearLayout.VERTICAL
                 isClickable = true
@@ -316,7 +426,7 @@ fun showPagesSheet(a: Activity, ui: PagesUi) {
                 setTextColor(Color.parseColor(if (p.isLive) "#7FD6A0" else "#9AA0AC"))
             })
             row.addView(info, LinearLayout.LayoutParams(0, wrap, 1f))
-            if (p.isLive && !isCur) row.addView(ctl("💤", true) { ui.onHibernate(p); render() })
+            if (p.isLive && !isCur) row.addView(iconCtl("@hibernasi") { ui.onHibernate(p); render() })
             row.addView(ctl("▲", idx > 0) { ui.onMove(p, -1); render() })
             row.addView(ctl("▼", idx < list.size - 1) { ui.onMove(p, 1); render() })
             row.addView(ctl("✕", true) { ui.onClose(p); render() })
@@ -325,6 +435,101 @@ fun showPagesSheet(a: Activity, ui: PagesUi) {
     }
     pagesRender = { render() }
     render()
+    Favicons.fetchMissing(a, ui.pages().map { Favicons.hostOf(if (it.url.isNotBlank()) it.url else it.home) }) {
+        a.runOnUiThread { if (pagesDialog === d && d.isShowing) render() }
+    }
+
+    d.setContentView(root)
+    d.window?.apply {
+        setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+        setLayout(match, wrap)
+        setGravity(Gravity.BOTTOM)
+        setDimAmount(0.55f)
+        attributes = attributes.apply { windowAnimations = android.R.style.Animation_InputMethod }
+    }
+    d.show()
+}
+
+// Pilihan "buka di mana" (menggantikan dialog putih biasa): dua kartu besar, Page baru disorot
+fun showPageTargetSheet(a: Activity, url: String, info: String, onCurrent: () -> Unit, onNew: () -> Unit) {
+    val d = Dialog(a)
+    d.requestWindowFeature(Window.FEATURE_NO_TITLE)
+    val dp = a.resources.displayMetrics.density
+    fun px(v: Int) = (v * dp).toInt()
+    val match = ViewGroup.LayoutParams.MATCH_PARENT
+    val wrap = ViewGroup.LayoutParams.WRAP_CONTENT
+    fun bg(color: Int, r: Float, topOnly: Boolean) = GradientDrawable().apply {
+        setColor(color)
+        if (topOnly) cornerRadii = floatArrayOf(r, r, r, r, 0f, 0f, 0f, 0f) else cornerRadius = r
+    }
+    val host = Favicons.hostOf(url)
+    val root = LinearLayout(a).apply {
+        orientation = LinearLayout.VERTICAL
+        background = bg(Color.parseColor("#1F2024"), px(26).toFloat(), true)
+        setPadding(px(18), px(10), px(18), px(24))
+    }
+    root.addView(View(a).apply { background = bg(0x44FFFFFF, px(3).toFloat(), false) },
+        LinearLayout.LayoutParams(px(40), px(5)).apply { gravity = Gravity.CENTER_HORIZONTAL; bottomMargin = px(16) })
+
+    val head = LinearLayout(a).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+    head.addView(Favicons.badge(a, host, host, px(44)), LinearLayout.LayoutParams(px(44), px(44)).apply { rightMargin = px(12) })
+    val ht = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL }
+    ht.addView(TextView(a).apply {
+        text = "Buka di mana?"
+        textSize = 18f
+        setTextColor(Color.WHITE)
+        setTypeface(null, android.graphics.Typeface.BOLD)
+    })
+    ht.addView(TextView(a).apply {
+        text = if (host.isEmpty()) url else host
+        textSize = 13f
+        maxLines = 1
+        ellipsize = TextUtils.TruncateAt.END
+        setTextColor(Color.parseColor("#9AA0AC"))
+    })
+    head.addView(ht, LinearLayout.LayoutParams(0, wrap, 1f))
+    root.addView(head, LinearLayout.LayoutParams(match, wrap).apply { bottomMargin = px(14) })
+
+    fun card(icon: String, title: String, sub: String, primary: Boolean, action: () -> Unit) {
+        val c = LinearLayout(a).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = GradientDrawable().apply {
+                cornerRadius = px(18).toFloat()
+                setColor(Color.parseColor(if (primary) "#1E3556" else "#2A2C33"))
+                if (primary) setStroke(px(1), Color.parseColor("#5B8CFF"))
+            }
+            setPadding(px(16), px(14), px(16), px(14))
+            isClickable = true
+            setOnClickListener { d.dismiss(); action() }
+        }
+        c.addView(Icons.make(a, icon, 22f), LinearLayout.LayoutParams(px(40), px(40)).apply { rightMargin = px(14) })
+        val t = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL }
+        t.addView(TextView(a).apply {
+            text = title
+            textSize = 16f
+            setTypeface(null, android.graphics.Typeface.BOLD)
+            setTextColor(if (primary) Color.parseColor("#BFD3FF") else Color.WHITE)
+        })
+        t.addView(TextView(a).apply {
+            text = sub
+            textSize = 12.5f
+            setTextColor(Color.parseColor("#9AA0AC"))
+        })
+        c.addView(t, LinearLayout.LayoutParams(0, wrap, 1f))
+        c.addView(TextView(a).apply { text = "›"; textSize = 24f; setTextColor(Color.parseColor("#6B6F7A")) })
+        root.addView(c, LinearLayout.LayoutParams(match, wrap).apply { topMargin = px(8) })
+    }
+    card("@tambah_page", "Page baru", "Buka di tab baru, halaman yang sekarang tetap ada", true, onNew)
+    card("@page", "Page sekarang", "Ganti halaman yang sedang dibuka", false, onCurrent)
+    if (info.isNotEmpty()) {
+        root.addView(TextView(a).apply {
+            text = info
+            textSize = 12f
+            setTextColor(Color.parseColor("#7F93C9"))
+            setPadding(px(4), px(12), px(4), 0)
+        }, LinearLayout.LayoutParams(match, wrap))
+    }
 
     d.setContentView(root)
     d.window?.apply {

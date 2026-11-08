@@ -13,6 +13,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.Window
 import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -52,8 +53,6 @@ fun dismissSitesSheet() {
     try { sitesDialog?.dismiss() } catch (e: Exception) { }
     sitesDialog = null
 }
-
-private val AVATAR_COLORS = arrayOf("#3B82F6", "#22C55E", "#F59E0B", "#EC4899", "#8B5CF6", "#14B8A6", "#EF4444", "#0EA5E9")
 
 fun showSitesSheet(a: Activity, ui: SitesUi) {
     dismissSitesSheet()
@@ -123,13 +122,18 @@ fun showSitesSheet(a: Activity, ui: SitesUi) {
     saveRow.addView(secondaryBtn("✎ Tulis alamat", ui.onAddManual), LinearLayout.LayoutParams(0, wrap, 1f).apply { leftMargin = px(8) })
     root.addView(saveRow, LinearLayout.LayoutParams(match, wrap).apply { topMargin = px(4); bottomMargin = px(4) })
 
-    val hint = TextView(a).apply {
-        text = "Mode edit: 📌 sematkan · ▲▼ ◀▶ urutkan · ✎ ubah · ✕ hapus"
-        textSize = 11.5f
-        setTextColor(Color.parseColor("#7F93C9"))
-        setPadding(px(4), px(6), px(4), 0)
+    val hint = LinearLayout(a).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        setPadding(px(4), px(8), px(4), 0)
         visibility = View.GONE
     }
+    hint.addView(Icons.make(a, "@urut_hapus", 14f), LinearLayout.LayoutParams(px(22), px(22)).apply { rightMargin = px(8) })
+    hint.addView(TextView(a).apply {
+        text = "Mode edit: ketuk situs untuk mengubah · sematkan · urutkan · hapus ✕"
+        textSize = 11.5f
+        setTextColor(Color.parseColor("#7F93C9"))
+    })
     root.addView(hint, LinearLayout.LayoutParams(match, wrap))
 
     val box = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL }
@@ -205,9 +209,18 @@ fun showSitesSheet(a: Activity, ui: SitesUi) {
         render()
     }
 
+    fun iconCtl(key: String, alpha: Float, sizeDp: Int, action: () -> Unit): View {
+        val v = Icons.make(a, key, 14f)
+        v.alpha = alpha
+        v.setPadding(px(7), px(7), px(7), px(7))
+        v.isClickable = true
+        v.setOnClickListener { action() }
+        return FrameLayout(a).apply { addView(v, FrameLayout.LayoutParams(px(sizeDp), px(sizeDp))) }
+    }
+
     // Kontrol edit satu situs. horizontal = nama arah geser (◀▶ untuk kotak, ▲▼ untuk daftar)
     fun editControls(s: Site, canBack: Boolean, canFwd: Boolean, horizontal: Boolean, size: Float): List<View> = listOf(
-        ctl(if (s.pinned) "📌" else "📍", true, size) { togglePin(s) },
+        iconCtl("@sematkan", if (s.pinned) 1f else 0.4f, if (size > 16f) 40 else 36) { togglePin(s) },
         ctl(if (horizontal) "◀" else "▲", canBack, size) { move(s, -1) },
         ctl(if (horizontal) "▶" else "▼", canFwd, size) { move(s, 1) },
         ctl("✎", true, size) { ui.onEdit(s) { render() } },
@@ -220,13 +233,17 @@ fun showSitesSheet(a: Activity, ui: SitesUi) {
             background = bg(Color.parseColor("#2A2C33"), px(16).toFloat(), false)
             setPadding(px(14), px(12), px(8), px(if (editMode) 4 else 12))
         }
-        val info = LinearLayout(a).apply {
-            orientation = LinearLayout.VERTICAL
+        val top = LinearLayout(a).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
             isClickable = true
             setOnClickListener {
                 if (editMode) ui.onEdit(s) { render() } else { d.dismiss(); ui.onOpen(s.url) }
             }
         }
+        top.addView(Favicons.badge(a, Favicons.hostOf(s.url), s.name, px(40)),
+            LinearLayout.LayoutParams(px(40), px(40)).apply { rightMargin = px(12) })
+        val info = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL }
         info.addView(TextView(a).apply {
             text = (if (s.pinned) "📌 " else "") + s.name
             textSize = 16f
@@ -242,7 +259,8 @@ fun showSitesSheet(a: Activity, ui: SitesUi) {
             ellipsize = TextUtils.TruncateAt.END
             setTextColor(Color.parseColor("#9AA0AC"))
         })
-        row.addView(info, LinearLayout.LayoutParams(match, wrap))
+        top.addView(info, LinearLayout.LayoutParams(0, wrap, 1f))
+        row.addView(top, LinearLayout.LayoutParams(match, wrap))
         if (editMode) {
             val bar = LinearLayout(a).apply {
                 orientation = LinearLayout.HORIZONTAL
@@ -269,16 +287,7 @@ fun showSitesSheet(a: Activity, ui: SitesUi) {
                 if (editMode) ui.onEdit(s) { render() } else { d.dismiss(); ui.onOpen(s.url) }
             }
         }
-        val letter = s.name.trim().take(1).uppercase().ifEmpty { "?" }
-        val color = Color.parseColor(AVATAR_COLORS[((Uri.parse(s.url).host ?: s.url).hashCode() and 0x7fffffff) % AVATAR_COLORS.size])
-        main.addView(TextView(a).apply {
-            text = letter
-            textSize = 20f
-            setTextColor(Color.WHITE)
-            typeface = Typeface.DEFAULT_BOLD
-            gravity = Gravity.CENTER
-            background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(color) }
-        }, LinearLayout.LayoutParams(px(46), px(46)))
+        main.addView(Favicons.badge(a, Favicons.hostOf(s.url), s.name, px(46)), LinearLayout.LayoutParams(px(46), px(46)))
         main.addView(TextView(a).apply {
             text = (if (s.pinned) "📌 " else "") + s.name
             textSize = 12.5f
@@ -349,6 +358,10 @@ fun showSitesSheet(a: Activity, ui: SitesUi) {
         }
     }
     render()
+    // logo situs yang belum ada diunduh di latar belakang, lalu daftar digambar ulang
+    Favicons.fetchMissing(a, ui.load().map { Favicons.hostOf(it.url) }) {
+        a.runOnUiThread { if (sitesDialog === d && d.isShowing) render() }
+    }
 
     d.setContentView(root)
     d.window?.apply {

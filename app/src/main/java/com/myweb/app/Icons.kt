@@ -45,7 +45,12 @@ object Icons {
         "@page" to R.drawable.ik_page,
         "@batas_page" to R.drawable.ik_batas_page,
         "@view_grid" to R.drawable.ik_view_grid,
-        "@view_list" to R.drawable.ik_view_list
+        "@view_list" to R.drawable.ik_view_list,
+        "@sematkan" to R.drawable.ik_sematkan,
+        "@hibernasi" to R.drawable.ik_hibernasi,
+        "@tutup_otomatis" to R.drawable.ik_tutup_otomatis,
+        "@tambah_page" to R.drawable.ik_tambah_page,
+        "@urut_hapus" to R.drawable.ik_urut_hapus
     )
 
     fun has(key: String) = map.containsKey(key)

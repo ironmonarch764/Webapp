@@ -622,7 +622,7 @@ class MainActivity : AppCompatActivity() {
             cacheMode = WebSettings.LOAD_DEFAULT
         
         }
-        applyColorFilter(wv, prefs)
+        applyColorFilter(wv, prefs) 
         CookieManager.getInstance().setAcceptThirdPartyCookies(wv, !block3pOn())
         applyDocStart(pg)
         wv.addJavascriptInterface(Bridge(pg), "Android")
@@ -774,6 +774,12 @@ class MainActivity : AppCompatActivity() {
         }
 
         wv.webChromeClient = object : WebChromeClient() {
+            // logo situs untuk daftar Situs/Page (tanpa permintaan tambahan: ikon sudah diterima WebView)
+            override fun onReceivedIcon(v: WebView?, icon: android.graphics.Bitmap?) {
+                val u = v?.url
+                if (icon != null && isHttp(u)) Favicons.save(applicationContext, Favicons.hostOf(u), icon)
+            }
+
             override fun onReceivedTitle(v: WebView?, title: String?) {
                 if (!title.isNullOrBlank()) pg.title = title.trim().take(80)
             }
@@ -1130,7 +1136,9 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
                 onMove = { p, dir -> movePage(p, dir) },
                 onHibernate = { p -> hibernatePage(p, "manual") },
                 onNewPage = { askNewPage() },
-                onFromSites = { showSites() }
+                onFromSites = { showSites() },
+                grid = { prefs.getString("pages_view", "list") == "grid" },
+                setGrid = { g -> prefs.edit().putString("pages_view", if (g) "grid" else "list").apply() }
             )
         )
     }
@@ -1221,16 +1229,16 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
             0, PagePolicy.HARD_MAX_LIVE, prefs.getInt("pages_limit", 0).coerceIn(0, PagePolicy.HARD_MAX_LIVE),
             { v -> if (v == 0) "Otomatis (" + rec + ")" else if (v > rec) v.toString() + " ⚠" else v.toString() + " page" }
         ) { v -> setPageLimit(v) })
-        rows.add(SettingRow.Level("💤", "Hibernasi setelah", "Page yang lama tidak dibuka dibekukan untuk menghemat RAM; dimuat ulang di posisi terakhir saat dibuka",
+        rows.add(SettingRow.Level("@hibernasi", "Hibernasi setelah", "Page yang lama tidak dibuka dibekukan untuk menghemat RAM; dimuat ulang di posisi terakhir saat dibuka",
             0, PagePolicy.HIB_MINUTES.size, prefs.getInt("pages_hib_idx", 0).coerceIn(0, PagePolicy.HIB_MINUTES.size),
             { v -> PageLimits.formatHibernate(this, v) }
         ) { v -> prefs.edit().putInt("pages_hib_idx", v).apply() })
-        rows.add(SettingRow.Toggle("🗑", "Tutup otomatis page hibernasi", "Page yang lama hibernasi tanpa dibuka ditutup sendiri (minimal satu page tersisa)",
+        rows.add(SettingRow.Toggle("@tutup_otomatis", "Tutup otomatis page hibernasi", "Page yang lama hibernasi tanpa dibuka ditutup sendiri (minimal satu page tersisa)",
             prefs.getBoolean("pages_autoclose", true)) { on ->
             prefs.edit().putBoolean("pages_autoclose", on).apply()
         })
         if (prefs.getBoolean("pages_autoclose", true)) {
-            rows.add(SettingRow.Level("⏳", "Tutup setelah hibernasi", "Lama page hibernasi sebelum ditutup otomatis",
+            rows.add(SettingRow.Level("@tutup_otomatis", "Tutup setelah hibernasi", "Lama page hibernasi sebelum ditutup otomatis",
                 1, PagePolicy.CLOSE_HOURS.size, prefs.getInt("pages_close_idx", 5).coerceIn(1, PagePolicy.CLOSE_HOURS.size),
                 { v -> PageLimits.formatClose(v) }
             ) { v -> prefs.edit().putInt("pages_close_idx", v).apply() })
@@ -2062,12 +2070,10 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
     }
 
     private fun askPageTarget(url: String) {
-        val host = Uri.parse(url).host?.removePrefix("www.") ?: url
-        AlertDialog.Builder(this)
-            .setTitle("Buka " + host + " di")
-            .setItems(arrayOf("Page sekarang", "Page baru")) { _, i -> if (i == 1) openInNewPage(url) else openInCurrent(url) }
-            .setNegativeButton("Batal", null)
-            .show()
+        val live = pages.count { it.isLive }
+        val lim = PageLimits.limit(this, prefs)
+        val info = if (live >= lim) "Page aktif sudah " + live + "/" + lim + ". Page yang paling lama tidak dilihat akan dihibernasi otomatis." else ""
+        showPageTargetSheet(this, url, info, { openInCurrent(url) }, { openInNewPage(url) })
     }
 
     private fun showSites() {

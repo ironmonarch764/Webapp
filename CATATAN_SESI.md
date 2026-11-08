@@ -128,3 +128,9 @@ Belum diuji / sisa: lihat laporan akhir sesi (build Kotlin/APK, perangkat nyata,
 - QuickTools: tombol ke-4 "Page" di bawah Gulir (hanya bila Page ON) + lencana jumlah page. activity_main.xml: WebView diganti FrameLayout pageHost.
 - Sites.kt: tampilan daftar/kotak, tombol Edit (sematkan, urutkan, ubah, hapus). Data situs kini punya flag "p" (pin), kompatibel dengan data lama.
 - Ikon baru: ik_edit, ik_page, ik_batas_page, ik_view_grid, ik_view_list (dipotong dari foto).
+
+## Perbaikan tampilan Page + logo situs - BELUM dikompilasi/diuji
+- Dialog "buka di mana" diganti sheet gelap modern (showPageTargetSheet). Logo situs (Favicons.kt) di daftar Situs dan Page; sumber: onReceivedIcon + /favicon.ico situs itu sendiri (tanpa layanan pihak ketiga).
+- Ikon baru dipakai: sematkan, hibernasi, tutup otomatis, tambah page, urut/hapus. README.md ditambahkan.
+- Semua AlertDialog bergaya gelap lewat tema AppDialog (themes.xml, alertDialogTheme) + drawable bg_dialog.xml.
+- Sheet Page: tombol tampilan daftar/kotak (pref pages_view).
