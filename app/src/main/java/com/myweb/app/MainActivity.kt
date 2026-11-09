@@ -2135,8 +2135,8 @@ override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Bo
         }
     }
 
-    // Ketukan singkat di luar panel melayang menutupnya (UP diganti CANCEL supaya halaman/tombol di bawahnya tidak ikut
-    // terketuk). Menggeser layar di luar panel juga menutupnya dan gerakannya tetap sampai ke halaman.
+    // Menyentuh layar di luar panel melayang langsung menutupnya (saat jari turun), gerakannya tetap sampai ke halaman.
+    // Bila hanya ketukan singkat, UP diganti CANCEL supaya halaman/tombol di bawahnya tidak ikut terketuk.
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
         if (FloatingPanel.onTouch(ev)) {
             val cancel = MotionEvent.obtain(ev)

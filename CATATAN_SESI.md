@@ -176,3 +176,11 @@ Belum diuji / sisa: lihat laporan akhir sesi (build Kotlin/APK, perangkat nyata,
 - PagePolicy.moveToIndex(list, from, to) (Java murni, dites di PagePolicySelfTest: 454 lulus / 0 gagal). Kotlin: reorderSite (Sites.kt, hanya satu kelompok), MainActivity.reorderPage. PagesUi.onMove diganti onReorder(dari, ke). moveSite/PagePolicy.moveTarget lama tidak dipakai lagi (dibiarkan).
 - FloatingPanel.onTouch: selain ketukan, geseran di luar kartu (melewati touch slop) atau sentuhan kedua langsung menutup panel; gerakannya tetap diteruskan ke halaman sehingga halaman ikut tergulir. Tahan lama di luar kartu tidak menutup.
 - Belum dikompilasi/diuji di perangkat (Kotlin).
+
+## Panel lebih responsif
+- FloatingPanel.onTouch kini menutup panel SAAT jari menyentuh di luar kartu (ACTION_DOWN), bukan menunggu geser melewati touch slop atau jari diangkat. Geseran pelan pun menutup; sentuhan tetap diteruskan ke halaman (halaman ikut tergulir bila digeser). Bila ternyata ketukan singkat (tanpa geser melewati slop, kurang dari waktu long-press), UP diganti CANCEL agar halaman/tombol di bawahnya tidak ikut terketuk. Tahan lama di luar kartu juga menutup (sudah tertutup sejak DOWN).
+- Animasi buka panel dipersingkat: 180 ms -> 90 ms, geser awal 36dp -> 12dp. Penutupan tidak beranimasi (instan).
+- Belum dikompilasi/diuji di perangkat (Kotlin).
+
+## Jeda ketukan tombol menu dipersingkat
+- FabController.COOLDOWN_MS (jeda setelah tombol menu muncul/hilang karena ketukan, mencegah bug ketukan beruntun) 700 ms -> 250 ms. Ketukan kedua di tengah animasi tetap aman: applyShown membatalkan animasi tiap tombol (animate().cancel()) lalu memulai yang baru dari posisi saat itu. Bila terasa kurang/lebih, ubah angka itu (baris "Pengaturan" di awal kelas). STAGGER_MS (70 ms antar tombol) tidak diubah.

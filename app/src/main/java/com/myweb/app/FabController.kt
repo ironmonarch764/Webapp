@@ -32,7 +32,7 @@ class FabController(
     private val edgeFraction: () -> Float = { 0.9f }   // jarak satu ketukan = bagian tinggi layar (diatur di Pengaturan > Gulir)
 ) {
     // ---- Pengaturan (ubah angkanya sesuai selera) ----
-    private val COOLDOWN_MS = 700L      // jeda tombol menu, milidetik
+    private val COOLDOWN_MS = 250L      // jeda tombol menu, milidetik (dulu 700; animasi yang sedang jalan dibatalkan dan dibalik dengan mulus)
     private val STAGGER_MS = 70L        // jeda antar tombol saat muncul/hilang bergantian
     private val SIDE_ZONE = 0.09f       // lebar area ketuk kiri & kanan (9% lebar layar). 0f = matikan
     private val SIDE_TOP = 0.15f        // area samping mulai dari 15% tinggi layar (sisakan bar atas situs)

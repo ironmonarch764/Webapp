@@ -50,62 +50,52 @@ class FloatingPanel(
             return true
         }
 
-        // --- ketukan di luar kartu ---
-        private var gestureOutside = false
+        // --- sentuhan di luar kartu ---
+        private var swallowTap = false
         private var downX = 0f
         private var downY = 0f
         private var downTime = 0L
         private var moved = false
+        private var realSlop = 24f
 
         /**
          * Dipanggil dari Activity.dispatchTouchEvent untuk SETIAP sentuhan, sebelum diteruskan.
-         *  - Ketukan singkat di luar kartu: panel ditutup pada ACTION_UP dan fungsi ini mengembalikan true; Activity harus
-         *    mengganti UP itu dengan ACTION_CANCEL supaya halaman/tombol di bawahnya tidak ikut terketuk.
-         *  - Geseran di luar kartu (menggulir/menyeret halaman) atau sentuhan kedua: panel ditutup begitu jari bergeser
-         *    melewati batas touch slop, dan gerakan itu diteruskan apa adanya ke halaman (halaman ikut tergulir).
-         *  - Sentuhan di dalam kartu dan tahan lama di luar kartu tidak menutup panel.
+         * Panel ditutup SEGERA saat jari menyentuh layar di luar kartu (ACTION_DOWN), jadi geseran pelan pun menutupnya
+         * dan tidak ada jeda menunggu jari diangkat. Sentuhan itu tetap diteruskan ke halaman, sehingga bila ternyata
+         * digeser, halaman ikut tergulir.
+         * Bila ternyata hanya ketukan singkat (jari tidak bergeser melewati touch slop dan cepat diangkat), fungsi ini
+         * mengembalikan true pada ACTION_UP: Activity harus mengganti UP itu dengan ACTION_CANCEL supaya halaman/tombol
+         * di bawahnya tidak ikut terketuk oleh ketukan penutup tadi.
+         * Sentuhan di dalam kartu tidak menutup panel.
          */
         fun onTouch(ev: MotionEvent): Boolean {
-            val c = current
             when (ev.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
-                    gestureOutside = false
+                    swallowTap = false
+                    val c = current
                     if (c != null && c.isShowing && c.cancelable && !c.insideCard(ev.rawX, ev.rawY)) {
-                        gestureOutside = true
+                        swallowTap = true
                         downX = ev.rawX
                         downY = ev.rawY
                         downTime = ev.eventTime
                         moved = false
-                    }
-                }
-                MotionEvent.ACTION_POINTER_DOWN -> {
-                    if (gestureOutside && c != null) {
-                        moved = true
-                        gestureOutside = false
+                        realSlop = c.slop.toFloat()
                         c.dismiss()
                     }
                 }
+                MotionEvent.ACTION_POINTER_DOWN -> moved = true
                 MotionEvent.ACTION_MOVE -> {
-                    if (gestureOutside && !moved && c != null) {
+                    if (swallowTap && !moved) {
                         val dx = ev.rawX - downX
                         val dy = ev.rawY - downY
-                        if (dx * dx + dy * dy > c.slop * c.slop) {
-                            // digeser: tutup panel, gerakan tetap diteruskan ke halaman
-                            moved = true
-                            gestureOutside = false
-                            c.dismiss()
-                        }
+                        if (dx * dx + dy * dy > realSlop * realSlop) moved = true
                     }
                 }
-                MotionEvent.ACTION_CANCEL -> gestureOutside = false
+                MotionEvent.ACTION_CANCEL -> swallowTap = false
                 MotionEvent.ACTION_UP -> {
-                    val was = gestureOutside
-                    gestureOutside = false
-                    if (was && !moved && c != null && c.isShowing &&
-                        ev.eventTime - downTime < ViewConfiguration.getLongPressTimeout()) {
-                        c.dismiss()
-                        return true
-                    }
+                    val was = swallowTap
+                    swallowTap = false
+                    if (was && !moved && ev.eventTime - downTime < ViewConfiguration.getLongPressTimeout()) return true
                 }
             }
             return false
@@ -228,8 +218,8 @@ class FloatingPanel(
         card.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> clampToScreen() }
         card.alpha = 0f
         card.translationX = sx
-        card.translationY = sy + px(36)
-        card.animate().alpha(1f).translationY(sy).setDuration(180L).start()
+        card.translationY = sy + px(12)
+        card.animate().alpha(1f).translationY(sy).setDuration(90L).start()
     }
 
     fun dismiss() {
